@@ -1,0 +1,83 @@
+// AI Work Traffic Light — 前端灯逻辑（无构建步骤，纯浏览器可跑）
+//
+// 聚合状态由后端(Tauri)通过 `state-changed` 事件推送：
+//   { status: "working" | "idle" | "blocked" | "none", sessionLabel?: string }
+//     working = 绿（Claude 工作中）
+//     idle    = 黄（完成这轮 / 空闲，该你了）
+//     blocked = 红（卡住，等你 —— 带会话标识）
+//     none    = 隐藏（无任何会话）
+//
+// 浏览器下(无 Tauri)自动进入演示模式，可手动切换各状态验证视觉。
+
+(function () {
+  "use strict";
+
+  var STATUS_CLASS = {
+    working: "is-working",
+    idle: "is-idle",
+    blocked: "is-blocked",
+    none: "is-none",
+  };
+
+  var widget = document.getElementById("widget");
+  var labelEl = document.getElementById("label");
+
+  // 把一个聚合状态应用到灯。
+  function applyState(state) {
+    var status = (state && state.status) || "none";
+    var cls = STATUS_CLASS[status] || "is-none";
+
+    widget.classList.remove(
+      "is-working",
+      "is-idle",
+      "is-blocked",
+      "is-none",
+      "has-label"
+    );
+    widget.classList.add(cls);
+
+    // 标签仅在红灯且有会话标识时显示——标出哪个会话需要你。
+    var label = state && state.sessionLabel ? String(state.sessionLabel) : "";
+    if (status === "blocked" && label) {
+      labelEl.textContent = label;
+      widget.classList.add("has-label");
+      widget.setAttribute("title", "需要你：" + label);
+    } else {
+      labelEl.textContent = "";
+      widget.setAttribute("title", "AI Work Traffic Light");
+    }
+  }
+
+  // 暴露给后端/调试调用。
+  window.TrafficLight = { applyState: applyState };
+
+  var underTauri = !!(window.__TAURI__ && window.__TAURI__.event);
+
+  if (underTauri) {
+    // 后端推送状态变化。
+    window.__TAURI__.event.listen("state-changed", function (evt) {
+      applyState(evt && evt.payload ? evt.payload : { status: "none" });
+    });
+  } else {
+    enableDemo();
+  }
+
+  function enableDemo() {
+    document.body.classList.add("demo-mode");
+    var demo = document.getElementById("demo");
+    if (demo) demo.hidden = false;
+
+    var input = document.getElementById("demo-label");
+    var buttons = document.querySelectorAll(".demo button[data-status]");
+    Array.prototype.forEach.call(buttons, function (btn) {
+      btn.addEventListener("click", function () {
+        applyState({
+          status: btn.getAttribute("data-status"),
+          sessionLabel: input ? input.value : "",
+        });
+      });
+    });
+
+    applyState({ status: "working", sessionLabel: input ? input.value : "" });
+  }
+})();

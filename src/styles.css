@@ -1,0 +1,177 @@
+/* AI Work Traffic Light — 悬浮灯样式
+   状态: working(绿) / idle(黄) / blocked(红) / none(隐藏)
+   设计目标: 小、干净、能贴在(通常深色的)任务栏上不突兀; 红灯轻微脉冲以抓注意力。 */
+
+:root {
+  --lamp-size: 14px;
+
+  --c-working: #2ea043;
+  --c-working-glow: rgba(46, 160, 67, 0.65);
+  --c-idle: #d29922;
+  --c-idle-glow: rgba(210, 153, 34, 0.6);
+  --c-blocked: #f85149;
+  --c-blocked-glow: rgba(248, 81, 73, 0.75);
+
+  --label-bg: rgba(20, 22, 27, 0.82);
+  --label-fg: #e6edf3;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: transparent; /* Tauri 窗口透明，灯浮在任务栏上 */
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* 悬浮灯容器：一个灯 + 可选标签，水平排列 */
+.widget {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 100%;
+  padding: 0 4px;
+  cursor: default; /* 点灯跳转(R12)是后续阶段，届时改为 pointer */
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+/* 灯本体：玻璃感圆点 + 颜色光晕 */
+.lamp {
+  width: var(--lamp-size);
+  height: var(--lamp-size);
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: radial-gradient(circle at 32% 28%, rgba(255, 255, 255, 0.85), rgba(255, 255, 255, 0) 42%),
+    var(--lamp-color, #6e7681);
+  box-shadow: 0 0 6px 1px var(--lamp-glow, transparent),
+    inset 0 0 2px rgba(0, 0, 0, 0.35);
+  transition: background 200ms ease, box-shadow 200ms ease;
+}
+
+/* 会话标识：红灯(带 label)时出现的小药丸 */
+.label {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--label-fg);
+  background: var(--label-bg);
+  padding: 1px 8px;
+  border-radius: 999px;
+  opacity: 0;
+  transform: translateX(-4px);
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+/* ---- 状态 ---- */
+
+.widget.is-working {
+  --lamp-color: var(--c-working);
+  --lamp-glow: var(--c-working-glow);
+}
+
+.widget.is-idle {
+  --lamp-color: var(--c-idle);
+  --lamp-glow: var(--c-idle-glow);
+}
+
+.widget.is-blocked {
+  --lamp-color: var(--c-blocked);
+  --lamp-glow: var(--c-blocked-glow);
+}
+.widget.is-blocked .lamp {
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+/* 隐藏：无任何会话 */
+.widget.is-none {
+  opacity: 0;
+  transform: scale(0.6);
+  pointer-events: none;
+}
+
+/* 有标签时显示药丸（主要是红灯标出哪个会话） */
+.widget.has-label .label {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 6px 1px var(--lamp-glow), inset 0 0 2px rgba(0, 0, 0, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 11px 3px var(--lamp-glow), inset 0 0 2px rgba(0, 0, 0, 0.35);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .widget.is-blocked .lamp {
+    animation: none;
+  }
+}
+
+/* ---- 演示控制面板（仅浏览器） ---- */
+.demo {
+  position: fixed;
+  left: 12px;
+  bottom: 12px;
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  background: rgba(20, 22, 27, 0.92);
+  color: var(--label-fg);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  font-size: 13px;
+}
+.demo-title {
+  font-weight: 600;
+  opacity: 0.8;
+}
+.demo-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.demo button {
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #21262d;
+  color: var(--label-fg);
+  padding: 5px 9px;
+  border-radius: 7px;
+  font-size: 13px;
+}
+.demo button:hover {
+  background: #30363d;
+}
+.demo input {
+  flex: 1;
+  background: #0d1117;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--label-fg);
+  border-radius: 6px;
+  padding: 4px 7px;
+}
+
+/* 浏览器演示时给个浅色衬底，好看清灯（Tauri 下 body 透明，此规则不影响） */
+body.demo-mode {
+  background: #1b1f24;
+}
+body.demo-mode .widget {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  height: 32px;
+}
