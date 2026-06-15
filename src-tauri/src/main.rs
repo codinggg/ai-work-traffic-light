@@ -3,10 +3,18 @@
 // 状态推送(U3/U4)、Win32 定位(U6)、通知(U7)、设置(U8) 后续单元接入。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod server;
+mod state;
+
+use std::sync::{Arc, Mutex};
+
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
 };
+
+/// Claude Code 的 hook 把事件 POST 到这个本地端口（U3 监听 / U5 安装器写入）。
+pub const STATE_PORT: u16 = 48756;
 
 fn main() {
     tauri::Builder::default()
@@ -30,6 +38,10 @@ fn main() {
                     }
                 })
                 .build(app)?;
+
+            // U3/U4：本地状态接入端点 + 状态机/多会话聚合。
+            let store = Arc::new(Mutex::new(state::Store::default()));
+            server::start(app.handle().clone(), store, STATE_PORT);
 
             Ok(())
         })
