@@ -112,9 +112,9 @@ impl Store {
 
 /// 从 cwd 取最后一段作为会话标识(项目目录名)，兼容 / 与 \。
 fn label_from_cwd(cwd: &str) -> String {
-    let trimmed = cwd.trim_end_matches(|c| c == '/' || c == '\\');
+    let trimmed = cwd.trim_end_matches(['/', '\\']);
     trimmed
-        .rsplit(|c| c == '/' || c == '\\')
+        .rsplit(['/', '\\'])
         .next()
         .filter(|s| !s.is_empty())
         .unwrap_or(trimmed)
