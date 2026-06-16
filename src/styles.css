@@ -43,6 +43,12 @@ body {
   transition: opacity 180ms ease, transform 180ms ease;
 }
 
+/* 子元素不拦截鼠标，让按下事件落到带拖动属性的 .widget 上，整窗处处可拖 */
+.lamp,
+.label {
+  pointer-events: none;
+}
+
 /* 灯本体：玻璃感圆点 + 颜色光晕 */
 .lamp {
   width: var(--lamp-size);
