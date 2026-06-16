@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
-    tray::TrayIconBuilder,
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager,
 };
 
@@ -29,6 +29,7 @@ pub struct Shared {
     pub sound_enabled: AtomicBool,
     pub locked: AtomicBool,
     pub positioned: AtomicBool,
+    pub manual_show: AtomicBool,
 }
 
 /// 弹个原生消息框反馈安装/卸载结果。
@@ -79,6 +80,7 @@ fn main() {
                 sound_enabled: AtomicBool::new(true),
                 locked: AtomicBool::new(false),
                 positioned: AtomicBool::new(false),
+                manual_show: AtomicBool::new(false),
             });
 
             // 托盘菜单：提示音 / 开机自启(勾选) + 安装/卸载 hooks + 退出。
@@ -128,11 +130,26 @@ fn main() {
             let sound_check = sound_item.clone();
             let autostart_check = autostart_item.clone();
             let lock_check = lock_item.clone();
+            let shared_tray = shared.clone();
 
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
+                .show_menu_on_left_click(false)
                 .tooltip("AI Work Traffic Light")
+                .on_tray_icon_event(move |tray, event| {
+                    // 左键托盘图标：手动显示/隐藏灯（空闲时也能召唤出来）。
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let next = !shared_tray.manual_show.load(Ordering::Relaxed);
+                        shared_tray.manual_show.store(next, Ordering::Relaxed);
+                        server::refresh(tray.app_handle(), &shared_tray);
+                    }
+                })
                 .on_menu_event(move |app, event| {
                     let id = event.id();
                     if id == "toggle_sound" {

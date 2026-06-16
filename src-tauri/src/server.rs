@@ -11,6 +11,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 
+use crate::state::Aggregate;
 use crate::Shared;
 
 pub fn start(app: AppHandle, shared: Arc<Shared>, port: u16) {
@@ -54,21 +55,44 @@ pub fn start(app: AppHandle, shared: Arc<Shared>, port: u16) {
                 );
             }
 
-            let _ = app.emit("state-changed", &agg);
-            if let Some(win) = app.get_webview_window("light") {
-                if agg.status == "none" {
-                    let _ = win.hide();
-                } else {
-                    // 仅首次显示时自动定位到任务栏；之后保留用户拖动后的位置。
-                    #[cfg(windows)]
-                    if !shared.positioned.swap(true, Ordering::Relaxed) {
-                        crate::taskbar::position_over_taskbar(&win);
-                    }
-                    let _ = win.show();
-                }
-            }
+            apply_effective(&app, &shared, agg);
         }
     });
+}
+
+/// 重新计算并应用当前应显示的状态（供托盘左键手动显隐时调用）。
+pub fn refresh(app: &AppHandle, shared: &Shared) {
+    let agg = shared.store.lock().unwrap().aggregate();
+    apply_effective(app, shared, agg);
+}
+
+/// 把"真实聚合 + 手动显示"折算成最终显示，并显隐窗口。
+/// 无会话(none)时：手动显示 -> 灰色中性灯；否则隐藏。
+fn apply_effective(app: &AppHandle, shared: &Shared, real: Aggregate) {
+    let effective = if real.status != "none" {
+        real
+    } else if shared.manual_show.load(Ordering::Relaxed) {
+        Aggregate {
+            status: "neutral".to_string(),
+            session_label: String::new(),
+        }
+    } else {
+        real
+    };
+
+    let _ = app.emit("state-changed", &effective);
+    if let Some(win) = app.get_webview_window("light") {
+        if effective.status == "none" {
+            let _ = win.hide();
+        } else {
+            // 仅首次显示时自动定位到任务栏；之后保留用户拖动后的位置。
+            #[cfg(windows)]
+            if !shared.positioned.swap(true, Ordering::Relaxed) {
+                crate::taskbar::position_over_taskbar(&win);
+            }
+            let _ = win.show();
+        }
+    }
 }
 
 /// 红灯：弹系统通知(含会话标识) + 可选提示音。

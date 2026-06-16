@@ -16,6 +16,7 @@
     working: "is-working",
     idle: "is-idle",
     blocked: "is-blocked",
+    neutral: "is-neutral",
     none: "is-none",
   };
 
@@ -31,6 +32,7 @@
       "is-working",
       "is-idle",
       "is-blocked",
+      "is-neutral",
       "is-none",
       "has-label"
     );

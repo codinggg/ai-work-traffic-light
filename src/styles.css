@@ -92,6 +92,12 @@ body {
   animation: pulse 1.6s ease-in-out infinite;
 }
 
+/* 中性：手动召唤但无会话时的灰灯（否则 none 是透明的看不见） */
+.widget.is-neutral {
+  --lamp-color: #6e7681;
+  --lamp-glow: transparent;
+}
+
 /* 隐藏：无任何会话 */
 .widget.is-none {
   opacity: 0;
