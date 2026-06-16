@@ -6,6 +6,8 @@
 mod installer;
 mod server;
 mod state;
+#[cfg(windows)]
+mod taskbar;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};

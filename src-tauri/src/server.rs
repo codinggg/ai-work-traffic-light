@@ -56,11 +56,13 @@ pub fn start(app: AppHandle, shared: Arc<Shared>, port: u16) {
 
             let _ = app.emit("state-changed", &agg);
             if let Some(win) = app.get_webview_window("light") {
-                let _ = if agg.status == "none" {
-                    win.hide()
+                if agg.status == "none" {
+                    let _ = win.hide();
                 } else {
-                    win.show()
-                };
+                    #[cfg(windows)]
+                    crate::taskbar::position_over_taskbar(&win);
+                    let _ = win.show();
+                }
             }
         }
     });
