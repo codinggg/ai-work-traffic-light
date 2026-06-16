@@ -7,6 +7,7 @@ mod installer;
 mod server;
 mod state;
 
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use tauri::{
@@ -17,6 +18,13 @@ use tauri::{
 
 /// Claude Code 的 hook 把事件 POST 到这个本地端口（U3 监听 / U5 安装器写入）。
 pub const STATE_PORT: u16 = 48756;
+
+/// 跨线程共享状态：会话状态机 + 上次聚合状态(红灯进入检测) + 声音开关。
+pub struct Shared {
+    pub store: Mutex<state::Store>,
+    pub last_status: Mutex<String>,
+    pub sound_enabled: AtomicBool,
+}
 
 /// 弹个原生消息框反馈安装/卸载结果。
 fn notify_result(app: &AppHandle, result: Result<String, String>) {
@@ -31,6 +39,7 @@ fn notify_result(app: &AppHandle, result: Result<String, String>) {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         // 开机自启插件。默认启用/关闭的策略放到 U8(设置/托盘菜单)里接。
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -62,9 +71,13 @@ fn main() {
                 })
                 .build(app)?;
 
-            // U3/U4：本地状态接入端点 + 状态机/多会话聚合。
-            let store = Arc::new(Mutex::new(state::Store::default()));
-            server::start(app.handle().clone(), store, STATE_PORT);
+            // U3/U4 状态机 + U7 通知所需的共享状态。
+            let shared = Arc::new(Shared {
+                store: Mutex::new(state::Store::default()),
+                last_status: Mutex::new("none".to_string()),
+                sound_enabled: AtomicBool::new(true),
+            });
+            server::start(app.handle().clone(), shared, STATE_PORT);
 
             Ok(())
         })
