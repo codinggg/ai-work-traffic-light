@@ -13,7 +13,11 @@
       status: working(绿) | idle(黄) | blocked(红) | none(隐藏)
     -->
     <div id="widget" class="widget is-none" role="status" aria-live="polite" title="拖动可移动；右键锁定位置" data-tauri-drag-region>
-      <span class="lamp" aria-hidden="true"></span>
+      <span class="housing" aria-hidden="true">
+        <span class="lamp lamp-red"></span>
+        <span class="lamp lamp-yellow"></span>
+        <span class="lamp lamp-green"></span>
+      </span>
       <span class="label" id="label"></span>
     </div>
 
@@ -23,7 +27,7 @@
     </div>
 
     <!-- 验证用控制面板：仅在浏览器(非 Tauri)下显示 -->
-    <div id="demo" class="demo" hidden>
+    <!-- <div id="demo" class="demo" hidden>
       <div class="demo-title">演示控制（仅浏览器可见）</div>
       <div class="demo-row">
         <button type="button" data-status="working">🟢 工作中</button>
@@ -35,7 +39,7 @@
         会话标识（红灯时显示）：
         <input id="demo-label" type="text" value="ai-work-traffic-light" />
       </label>
-    </div>
+    </div> -->
 
     <script src="main.js"></script>
   </body>

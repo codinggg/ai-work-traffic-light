@@ -53,15 +53,33 @@
   // 暴露给后端/调试调用。
   window.TrafficLight = { applyState: applyState };
 
-  var underTauri = !!(window.__TAURI__ && window.__TAURI__.event);
+  // 演示模式仅在显式 ?demo 时开启；真实 app 永不进入演示
+  // (否则深色底 + 演示面板会露出来，看起来像"黑框")。
+  var demoMode = new URLSearchParams(window.location.search).has("demo");
 
-  if (underTauri) {
-    // 后端推送状态变化。
-    window.__TAURI__.event.listen("state-changed", function (evt) {
-      applyState(evt && evt.payload ? evt.payload : { status: "none" });
-    });
-  } else {
+  if (demoMode) {
     enableDemo();
+  } else {
+    listenForState();
+  }
+
+  // 监听后端 state-changed；__TAURI__ 可能稍后才注入，重试约 5 秒。
+  function listenForState() {
+    if (tryListen()) return;
+    var tries = 0;
+    var timer = setInterval(function () {
+      if (tryListen() || ++tries > 50) clearInterval(timer);
+    }, 100);
+  }
+  function tryListen() {
+    var T = window.__TAURI__;
+    if (T && T.event && typeof T.event.listen === "function") {
+      T.event.listen("state-changed", function (evt) {
+        applyState(evt && evt.payload ? evt.payload : { status: "none" });
+      });
+      return true;
+    }
+    return false;
   }
 
   // 右键灯 -> 锁定位置（仅未锁定时能右键到；锁定后窗口点击穿透）。
@@ -82,8 +100,9 @@
     });
     lockBtn.addEventListener("click", function () {
       hide();
-      if (underTauri && window.__TAURI__.core) {
-        window.__TAURI__.core.invoke("set_locked", { locked: true });
+      var T = window.__TAURI__;
+      if (T && T.core && typeof T.core.invoke === "function") {
+        T.core.invoke("set_locked", { locked: true });
       }
     });
     window.addEventListener("click", hide);

@@ -1,17 +1,9 @@
-/* AI Work Traffic Light — 悬浮灯样式
-   状态: working(绿) / idle(黄) / blocked(红) / none(隐藏)
-   设计目标: 小、干净、能贴在(通常深色的)任务栏上不突兀; 红灯轻微脉冲以抓注意力。 */
+/* AI Work Traffic Light — 红绿灯样式
+   黑色外壳 + 三个灯(红/黄/绿)。没亮的灯浅色(淡)，亮起的灯深色(饱满)+发光。
+   状态: working(绿亮) / idle(黄亮) / blocked(红亮,脉冲) / neutral(三灯皆浅) / none(隐藏) */
 
 :root {
-  --lamp-size: 14px;
-
-  --c-working: #2ea043;
-  --c-working-glow: rgba(46, 160, 67, 0.65);
-  --c-idle: #d29922;
-  --c-idle-glow: rgba(210, 153, 34, 0.6);
-  --c-blocked: #f85149;
-  --c-blocked-glow: rgba(248, 81, 73, 0.75);
-
+  --lamp-size: 15px;
   --label-bg: rgba(20, 22, 27, 0.82);
   --label-fg: #e6edf3;
 }
@@ -24,14 +16,14 @@ html,
 body {
   margin: 0;
   padding: 0;
-  background: transparent; /* Tauri 窗口透明，灯浮在任务栏上 */
+  background: transparent; /* Tauri 窗口透明，只露出黑色外壳 */
   font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
   overflow: hidden;
   -webkit-user-select: none;
   user-select: none;
 }
 
-/* 悬浮灯容器：填满整个(透明)窗口，整窗都可拖动；灯+标签靠左 */
+/* 容器填满整个(透明)窗口，整窗可拖；外壳+标签靠左 */
 .widget {
   display: flex;
   align-items: center;
@@ -44,22 +36,82 @@ body {
 }
 
 /* 子元素不拦截鼠标，让按下事件落到带拖动属性的 .widget 上，整窗处处可拖 */
+.housing,
 .lamp,
 .label {
   pointer-events: none;
 }
 
-/* 灯本体：玻璃感圆点 + 颜色光晕 */
+/* 黑色外壳：横向容纳三个灯 */
+.housing {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 12px 7px;
+  background: #15171c;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 9px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+/* 灯：默认用浅色(--off)，亮起时用深色(--on)+光晕 */
 .lamp {
   width: var(--lamp-size);
   height: var(--lamp-size);
   border-radius: 50%;
   flex: 0 0 auto;
-  background: radial-gradient(circle at 32% 28%, rgba(255, 255, 255, 0.85), rgba(255, 255, 255, 0) 42%),
-    var(--lamp-color, #6e7681);
-  box-shadow: 0 0 6px 1px var(--lamp-glow, transparent),
-    inset 0 0 2px rgba(0, 0, 0, 0.35);
-  transition: background 200ms ease, box-shadow 200ms ease;
+  background: var(--off);
+  transition: background 180ms ease, box-shadow 180ms ease;
+}
+.lamp-red {
+  --on: #e5392e;
+  --off: #a78583;
+  --glow: rgba(229, 57, 46, 0.8);
+}
+.lamp-yellow {
+  --on: #e0a51f;
+  --off: #aaa17d;
+  --glow: rgba(224, 165, 31, 0.75);
+}
+.lamp-green {
+  --on: #2ea043;
+  --off: #7f9884;
+  --glow: rgba(46, 160, 67, 0.8);
+}
+
+/* 对应状态：点亮那一个灯（变深 + 发光） */
+.widget.is-working .lamp-green,
+.widget.is-idle .lamp-yellow,
+.widget.is-blocked .lamp-red {
+  background: var(--on);
+  box-shadow: 0 0 6px 1px var(--glow);
+}
+.widget.is-blocked .lamp-red {
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 6px 1px var(--glow);
+  }
+  50% {
+    box-shadow: 0 0 12px 3px var(--glow);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .widget.is-blocked .lamp-red {
+    animation: none;
+  }
+}
+
+/* neutral(召唤但无会话): 三灯皆浅、外壳可见 —— 默认样式即是，无需额外规则 */
+
+/* 隐藏：无任何会话 */
+.widget.is-none {
+  opacity: 0;
+  transform: scale(0.85);
+  pointer-events: none;
 }
 
 /* 会话标识：红灯(带 label)时出现的小药丸 */
@@ -78,60 +130,9 @@ body {
   transform: translateX(-4px);
   transition: opacity 180ms ease, transform 180ms ease;
 }
-
-/* ---- 状态 ---- */
-
-.widget.is-working {
-  --lamp-color: var(--c-working);
-  --lamp-glow: var(--c-working-glow);
-}
-
-.widget.is-idle {
-  --lamp-color: var(--c-idle);
-  --lamp-glow: var(--c-idle-glow);
-}
-
-.widget.is-blocked {
-  --lamp-color: var(--c-blocked);
-  --lamp-glow: var(--c-blocked-glow);
-}
-.widget.is-blocked .lamp {
-  animation: pulse 1.6s ease-in-out infinite;
-}
-
-/* 中性：手动召唤但无会话时的灰灯（否则 none 是透明的看不见） */
-.widget.is-neutral {
-  --lamp-color: #6e7681;
-  --lamp-glow: transparent;
-}
-
-/* 隐藏：无任何会话 */
-.widget.is-none {
-  opacity: 0;
-  transform: scale(0.6);
-  pointer-events: none;
-}
-
-/* 有标签时显示药丸（主要是红灯标出哪个会话） */
 .widget.has-label .label {
   opacity: 1;
   transform: translateX(0);
-}
-
-@keyframes pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 6px 1px var(--lamp-glow), inset 0 0 2px rgba(0, 0, 0, 0.35);
-  }
-  50% {
-    box-shadow: 0 0 11px 3px var(--lamp-glow), inset 0 0 2px rgba(0, 0, 0, 0.35);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .widget.is-blocked .lamp {
-    animation: none;
-  }
 }
 
 /* ---- 右键菜单 ---- */
@@ -161,7 +162,7 @@ body {
   background: rgba(255, 255, 255, 0.08);
 }
 
-/* ---- 演示控制面板（仅浏览器） ---- */
+/* ---- 演示控制面板（仅 ?demo） ---- */
 .demo {
   position: fixed;
   left: 12px;
@@ -205,7 +206,7 @@ body {
   padding: 4px 7px;
 }
 
-/* 浏览器演示时给个浅色衬底，好看清灯（Tauri 下 body 透明，此规则不影响） */
+/* 浏览器演示(?demo)时给个深色衬底，好看清灯（Tauri 真实窗口透明，不受影响） */
 body.demo-mode {
   background: #1b1f24;
 }
