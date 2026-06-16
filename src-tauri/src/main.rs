@@ -189,6 +189,21 @@ fn main() {
             // 本地状态端点(U3) + 状态机(U4) + 红灯通知(U7)。
             server::start(app.handle().clone(), shared, STATE_PORT);
 
+            // 常驻最顶层：点任务栏会把任务栏抢到置顶最前、盖住灯，所以灯可见时
+            // 每 ~0.8s 把它重新顶回最前（不抢焦点）。仅 Windows 需要。
+            #[cfg(windows)]
+            {
+                let app_handle = app.handle().clone();
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_millis(800));
+                    if let Some(win) = app_handle.get_webview_window("light") {
+                        if win.is_visible().unwrap_or(false) {
+                            taskbar::reassert_topmost(&win);
+                        }
+                    }
+                });
+            }
+
             Ok(())
         })
         .run(tauri::generate_context!())

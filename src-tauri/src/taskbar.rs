@@ -9,8 +9,10 @@
 
 use tauri::{PhysicalPosition, PhysicalSize, WebviewWindow};
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::RECT;
-use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowRect};
+use windows::Win32::Foundation::{HWND, RECT};
+use windows::Win32::UI::WindowsAndMessaging::{
+    FindWindowW, GetWindowRect, SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+};
 
 /// 灯相对任务栏左缘的水平偏移（像素）：越过最左侧的天气/widgets 按钮，避免重叠。
 /// 想再左/右移就改这个值。
@@ -31,6 +33,33 @@ pub fn position_over_taskbar(window: &WebviewWindow) {
     let y = (rect.top - size.height as i32 - GAP_ABOVE_PX).max(0); // 任务栏上方
 
     let _ = window.set_position(PhysicalPosition::new(x, y));
+}
+
+/// 把灯重新顶到所有置顶窗口的最前面。
+///
+/// 为什么需要：任务栏(Shell_TrayWnd)自己也是 topmost；用户点任务栏时，shell 会把
+/// 任务栏提到 topmost band 的最前，于是和灯重叠的地方就被任务栏盖住了。重新插一次
+/// HWND_TOPMOST 就能把灯夺回最前。NOMOVE|NOSIZE 保持原位原大小，NOACTIVATE 不抢焦点
+/// （不会打断用户正在操作的窗口）。
+///
+/// HWND 跨 crate 版本桥接：Tauri 自带 windows 0.61，本 crate 用 0.58，两版 HWND 都是
+/// `*mut c_void` 的透明包装，取原始指针重建本版 HWND 即可。
+pub fn reassert_topmost(window: &WebviewWindow) {
+    let Ok(raw) = window.hwnd() else {
+        return;
+    };
+    let hwnd = HWND(raw.0);
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
 }
 
 /// 取任务栏窗口的屏幕矩形（物理像素）。
