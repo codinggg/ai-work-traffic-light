@@ -97,7 +97,8 @@ fn main() {
                 sound_enabled: AtomicBool::new(cfg.sound_enabled),
                 locked: AtomicBool::new(cfg.locked),
                 positioned: AtomicBool::new(false),
-                manual_show: AtomicBool::new(false),
+                // 启动即显示灯：manual_show 默认开，无会话时也以 neutral 灰态常驻。
+                manual_show: AtomicBool::new(true),
                 last_pos: Mutex::new(cfg.pos),
             });
 
@@ -229,6 +230,10 @@ fn main() {
                     }
                 });
             }
+
+            // 启动即显示灯：刷新一次把窗口摆到位并显示（无会话时为 neutral 灰态）。
+            // 前端会在此时播放"红→黄→绿依次亮一下"的开场动画。
+            server::refresh(app.handle(), &shared);
 
             // 置顶/焦点检测线程要用的克隆（下面 server::start 会拿走 shared 本体）。
             #[cfg(windows)]

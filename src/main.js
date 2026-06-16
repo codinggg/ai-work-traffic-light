@@ -65,11 +65,22 @@
 
   // 监听后端 state-changed；__TAURI__ 可能稍后才注入，重试约 5 秒。
   function listenForState() {
+    playBoot();
     if (tryListen()) return;
     var tries = 0;
     var timer = setInterval(function () {
       if (tryListen() || ++tries > 50) clearInterval(timer);
     }, 100);
+  }
+
+  // 启动开场：让灯立刻以 neutral 灰态显示出来(后端也会显示窗口)，
+  // 并播放"红→黄→绿依次亮一下"动画，结束后回到 neutral 静态。
+  function playBoot() {
+    widget.classList.remove("is-none");
+    widget.classList.add("is-neutral", "is-boot");
+    setTimeout(function () {
+      widget.classList.remove("is-boot");
+    }, 1300); // 对应 styles.css 里 boot 动画总时长(约 1.05s)，留余量
   }
   function tryListen() {
     var T = window.__TAURI__;
