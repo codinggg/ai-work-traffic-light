@@ -1,6 +1,6 @@
 // AI Work Traffic Light — Tauri 入口。
-// 本单元(U2)：透明/无边框/置顶/不进任务栏的悬浮窗 + 托盘(含退出)。
-// 状态推送(U3/U4)、Win32 定位(U6)、通知(U7)、设置(U8) 后续单元接入。
+// 组装：透明置顶悬浮窗 + 托盘(提示音/自启开关、安装/卸载 hooks、退出)，
+// 本地状态端点(U3) + 状态机(U4)，红灯通知(U7)，任务栏定位(U6)。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod installer;
@@ -9,11 +9,11 @@ mod state;
 #[cfg(windows)]
 mod taskbar;
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tauri::{
-    menu::{Menu, MenuItem, PredefinedMenuItem},
+    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
     AppHandle,
 };
@@ -48,22 +48,77 @@ fn main() {
             None::<Vec<&str>>,
         ))
         .setup(|app| {
-            // 托盘菜单：安装/卸载 hooks + 退出。（U8 再加声音/自启开关）
+            use tauri_plugin_autostart::ManagerExt;
+
+            // 共享状态：状态机 + 上次聚合状态(红灯进入检测) + 声音开关。
+            let shared = Arc::new(Shared {
+                store: Mutex::new(state::Store::default()),
+                last_status: Mutex::new("none".to_string()),
+                sound_enabled: AtomicBool::new(true),
+            });
+
+            // 托盘菜单：提示音 / 开机自启(勾选) + 安装/卸载 hooks + 退出。
+            let autostart_on = app.autolaunch().is_enabled().unwrap_or(false);
+            let sound_item = CheckMenuItem::with_id(
+                app,
+                "toggle_sound",
+                "提示音",
+                true,
+                shared.sound_enabled.load(Ordering::Relaxed),
+                None::<&str>,
+            )?;
+            let autostart_item = CheckMenuItem::with_id(
+                app,
+                "toggle_autostart",
+                "开机自启",
+                true,
+                autostart_on,
+                None::<&str>,
+            )?;
             let install =
                 MenuItem::with_id(app, "install_hooks", "安装 hooks", true, None::<&str>)?;
             let uninstall =
                 MenuItem::with_id(app, "uninstall_hooks", "卸载 hooks", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let sep = PredefinedMenuItem::separator(app)?;
-            let menu = Menu::with_items(app, &[&install, &uninstall, &sep, &quit])?;
+            let sep1 = PredefinedMenuItem::separator(app)?;
+            let sep2 = PredefinedMenuItem::separator(app)?;
+            let menu = Menu::with_items(
+                app,
+                &[
+                    &sound_item,
+                    &autostart_item,
+                    &sep1,
+                    &install,
+                    &uninstall,
+                    &sep2,
+                    &quit,
+                ],
+            )?;
+
+            // 克隆给菜单回调，用于翻转开关并更新勾选态。
+            let shared_menu = shared.clone();
+            let sound_check = sound_item.clone();
+            let autostart_check = autostart_item.clone();
 
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
                 .tooltip("AI Work Traffic Light")
-                .on_menu_event(|app, event| {
+                .on_menu_event(move |app, event| {
                     let id = event.id();
-                    if id == "install_hooks" {
+                    if id == "toggle_sound" {
+                        let next = !shared_menu.sound_enabled.load(Ordering::Relaxed);
+                        shared_menu.sound_enabled.store(next, Ordering::Relaxed);
+                        let _ = sound_check.set_checked(next);
+                    } else if id == "toggle_autostart" {
+                        let on = app.autolaunch().is_enabled().unwrap_or(false);
+                        let _ = if on {
+                            app.autolaunch().disable()
+                        } else {
+                            app.autolaunch().enable()
+                        };
+                        let _ = autostart_check.set_checked(!on);
+                    } else if id == "install_hooks" {
                         notify_result(app, installer::install());
                     } else if id == "uninstall_hooks" {
                         notify_result(app, installer::uninstall());
@@ -73,12 +128,7 @@ fn main() {
                 })
                 .build(app)?;
 
-            // U3/U4 状态机 + U7 通知所需的共享状态。
-            let shared = Arc::new(Shared {
-                store: Mutex::new(state::Store::default()),
-                last_status: Mutex::new("none".to_string()),
-                sound_enabled: AtomicBool::new(true),
-            });
+            // 本地状态端点(U3) + 状态机(U4) + 红灯通知(U7)。
             server::start(app.handle().clone(), shared, STATE_PORT);
 
             Ok(())
