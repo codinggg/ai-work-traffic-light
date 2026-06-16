@@ -71,13 +71,13 @@ pub fn start(app: AppHandle, shared: Arc<Shared>, port: u16) {
                 notify_blocked(&app, &agg.session_label);
             }
             if changed && shared.sound_enabled.load(Ordering::Relaxed) {
-                // 红灯用 urgent 音，其它用普通音；各自可在 config.json 里指定自定义 .wav。
+                // 红灯用 urgent 音，其它用普通音；各自可在 config.json/托盘里指定自定义 .wav。
                 let custom = if entered_blocked {
-                    shared.sound_urgent_file.as_deref()
+                    shared.sound_urgent_file.lock().unwrap().clone()
                 } else {
-                    shared.sound_file.as_deref()
+                    shared.sound_file.lock().unwrap().clone()
                 };
-                play_sound(entered_blocked, custom);
+                play_sound(entered_blocked, custom.as_deref());
             }
 
             apply_effective(&app, &shared, agg);
@@ -159,6 +159,11 @@ fn play_sound(urgent: bool, custom: Option<&str>) {
 }
 #[cfg(not(windows))]
 fn play_sound(_urgent: bool, _custom: Option<&str>) {}
+
+/// 试听一个自定义提示音文件(托盘里选好后放一次让用户确认)。
+pub fn preview_sound(path: &str) {
+    play_sound(false, Some(path));
+}
 
 /// 从 hook JSON 负载里取 session_id、cwd 与 transcript_path。
 fn parse_payload(body: &str) -> (String, Option<String>, Option<String>) {

@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tauri::{
-    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
+    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager,
 };
@@ -34,9 +34,9 @@ pub struct Shared {
     pub manual_show: AtomicBool,
     /// 最近一次窗口位置(物理像素)；窗口 Moved 时更新，定时器节流落盘到 config.json。
     pub last_pos: Mutex<Option<(i32, i32)>>,
-    /// 自定义提示音(.wav)路径：普通切换用 / 红灯用。启动时从配置读入，运行期不改。
-    pub sound_file: Option<String>,
-    pub sound_urgent_file: Option<String>,
+    /// 自定义提示音(.wav)路径：普通切换用 / 红灯用。可在启动时从配置读入，也可托盘里改。
+    pub sound_file: Mutex<Option<String>>,
+    pub sound_urgent_file: Mutex<Option<String>>,
 }
 
 /// 把当前可持久化设置(提示音/锁定/位置/自定义音)写回 exe 同目录的 config.json。
@@ -45,8 +45,8 @@ fn persist(shared: &Shared) {
         sound_enabled: shared.sound_enabled.load(Ordering::Relaxed),
         locked: shared.locked.load(Ordering::Relaxed),
         pos: *shared.last_pos.lock().unwrap(),
-        sound_file: shared.sound_file.clone(),
-        sound_urgent_file: shared.sound_urgent_file.clone(),
+        sound_file: shared.sound_file.lock().unwrap().clone(),
+        sound_urgent_file: shared.sound_urgent_file.lock().unwrap().clone(),
     });
 }
 
@@ -107,19 +107,32 @@ fn main() {
                 // 启动即显示灯：manual_show 默认开，无会话时也以 neutral 灰态常驻。
                 manual_show: AtomicBool::new(true),
                 last_pos: Mutex::new(cfg.pos),
-                sound_file: cfg.sound_file.clone(),
-                sound_urgent_file: cfg.sound_urgent_file.clone(),
+                sound_file: Mutex::new(cfg.sound_file.clone()),
+                sound_urgent_file: Mutex::new(cfg.sound_urgent_file.clone()),
             });
 
-            // 托盘菜单：提示音 / 开机自启(勾选) + 安装/卸载 hooks + 退出。
+            // 托盘菜单：提示音(子菜单) / 开机自启(勾选) + 安装/卸载 hooks + 退出。
             let autostart_on = app.autolaunch().is_enabled().unwrap_or(false);
+            // 「提示音」子菜单：启用开关 + 选择普通/红灯自定义音 + 恢复默认。
             let sound_item = CheckMenuItem::with_id(
                 app,
                 "toggle_sound",
-                "提示音",
+                "启用提示音",
                 true,
                 shared.sound_enabled.load(Ordering::Relaxed),
                 None::<&str>,
+            )?;
+            let pick_normal =
+                MenuItem::with_id(app, "pick_sound", "选择提示音(普通)…", true, None::<&str>)?;
+            let pick_urgent =
+                MenuItem::with_id(app, "pick_sound_urgent", "选择提示音(红灯)…", true, None::<&str>)?;
+            let reset_sound =
+                MenuItem::with_id(app, "reset_sound", "恢复默认提示音", true, None::<&str>)?;
+            let sound_menu = Submenu::with_items(
+                app,
+                "提示音",
+                true,
+                &[&sound_item, &pick_normal, &pick_urgent, &reset_sound],
             )?;
             let autostart_item = CheckMenuItem::with_id(
                 app,
@@ -148,7 +161,7 @@ fn main() {
             let menu = Menu::with_items(
                 app,
                 &[
-                    &sound_item,
+                    &sound_menu,
                     &autostart_item,
                     &lock_item,
                     &sep1,
@@ -207,6 +220,35 @@ fn main() {
                             let _ = win.set_ignore_cursor_events(next);
                         }
                         let _ = lock_check.set_checked(next);
+                        persist(&shared_menu);
+                    } else if id == "pick_sound" || id == "pick_sound_urgent" {
+                        // 弹文件框选 .wav；选完写入配置并试听一次。
+                        use tauri_plugin_dialog::DialogExt;
+                        let urgent = id == "pick_sound_urgent";
+                        let sh = shared_menu.clone();
+                        app.dialog()
+                            .file()
+                            .add_filter("音频 (*.wav)", &["wav"])
+                            .set_title(if urgent {
+                                "选择红灯提示音 (.wav)"
+                            } else {
+                                "选择普通提示音 (.wav)"
+                            })
+                            .pick_file(move |path| {
+                                let Some(fp) = path else { return };
+                                let Ok(pb) = fp.into_path() else { return };
+                                let s = pb.to_string_lossy().to_string();
+                                if urgent {
+                                    *sh.sound_urgent_file.lock().unwrap() = Some(s.clone());
+                                } else {
+                                    *sh.sound_file.lock().unwrap() = Some(s.clone());
+                                }
+                                persist(&sh);
+                                server::preview_sound(&s); // 试听
+                            });
+                    } else if id == "reset_sound" {
+                        *shared_menu.sound_file.lock().unwrap() = None;
+                        *shared_menu.sound_urgent_file.lock().unwrap() = None;
                         persist(&shared_menu);
                     } else if id == "install_hooks" {
                         notify_result(app, installer::install());
