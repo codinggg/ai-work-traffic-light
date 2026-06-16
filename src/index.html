@@ -12,7 +12,7 @@
       并定位到任务栏左下。状态由后端通过 `state-changed` 事件推送。
       status: working(绿) | idle(黄) | blocked(红) | none(隐藏)
     -->
-    <div id="widget" class="widget is-none" role="status" aria-live="polite" title="AI Work Traffic Light">
+    <div id="widget" class="widget is-none" role="status" aria-live="polite" title="拖动可移动；在托盘菜单里锁定位置" data-tauri-drag-region>
       <span class="lamp" aria-hidden="true"></span>
       <span class="label" id="label"></span>
     </div>

@@ -59,8 +59,11 @@ pub fn start(app: AppHandle, shared: Arc<Shared>, port: u16) {
                 if agg.status == "none" {
                     let _ = win.hide();
                 } else {
+                    // 仅首次显示时自动定位到任务栏；之后保留用户拖动后的位置。
                     #[cfg(windows)]
-                    crate::taskbar::position_over_taskbar(&win);
+                    if !shared.positioned.swap(true, Ordering::Relaxed) {
+                        crate::taskbar::position_over_taskbar(&win);
+                    }
                     let _ = win.show();
                 }
             }

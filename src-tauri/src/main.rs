@@ -15,17 +15,20 @@ use std::sync::{Arc, Mutex};
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    AppHandle,
+    AppHandle, Manager,
 };
 
 /// Claude Code 的 hook 把事件 POST 到这个本地端口（U3 监听 / U5 安装器写入）。
 pub const STATE_PORT: u16 = 48756;
 
-/// 跨线程共享状态：会话状态机 + 上次聚合状态(红灯进入检测) + 声音开关。
+/// 跨线程共享状态：会话状态机 + 上次聚合状态(红灯进入检测) + 声音开关
+/// + 位置锁定 + 是否已自动定位过(避免每次显示都把用户拖动的位置拽回去)。
 pub struct Shared {
     pub store: Mutex<state::Store>,
     pub last_status: Mutex<String>,
     pub sound_enabled: AtomicBool,
+    pub locked: AtomicBool,
+    pub positioned: AtomicBool,
 }
 
 /// 弹个原生消息框反馈安装/卸载结果。
@@ -55,6 +58,8 @@ fn main() {
                 store: Mutex::new(state::Store::default()),
                 last_status: Mutex::new("none".to_string()),
                 sound_enabled: AtomicBool::new(true),
+                locked: AtomicBool::new(false),
+                positioned: AtomicBool::new(false),
             });
 
             // 托盘菜单：提示音 / 开机自启(勾选) + 安装/卸载 hooks + 退出。
@@ -75,6 +80,9 @@ fn main() {
                 autostart_on,
                 None::<&str>,
             )?;
+            // 锁定位置：默认不勾选(可拖动)；勾选后窗口点击穿透、不可选中。
+            let lock_item =
+                CheckMenuItem::with_id(app, "toggle_lock", "锁定位置", true, false, None::<&str>)?;
             let install =
                 MenuItem::with_id(app, "install_hooks", "安装 hooks", true, None::<&str>)?;
             let uninstall =
@@ -87,6 +95,7 @@ fn main() {
                 &[
                     &sound_item,
                     &autostart_item,
+                    &lock_item,
                     &sep1,
                     &install,
                     &uninstall,
@@ -99,6 +108,7 @@ fn main() {
             let shared_menu = shared.clone();
             let sound_check = sound_item.clone();
             let autostart_check = autostart_item.clone();
+            let lock_check = lock_item.clone();
 
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
@@ -118,6 +128,14 @@ fn main() {
                             app.autolaunch().enable()
                         };
                         let _ = autostart_check.set_checked(!on);
+                    } else if id == "toggle_lock" {
+                        let next = !shared_menu.locked.load(Ordering::Relaxed);
+                        shared_menu.locked.store(next, Ordering::Relaxed);
+                        if let Some(win) = app.get_webview_window("light") {
+                            // 锁定 = 点击穿透，不可选中/拖动。
+                            let _ = win.set_ignore_cursor_events(next);
+                        }
+                        let _ = lock_check.set_checked(next);
                     } else if id == "install_hooks" {
                         notify_result(app, installer::install());
                     } else if id == "uninstall_hooks" {
