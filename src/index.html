@@ -12,9 +12,14 @@
       并定位到任务栏左下。状态由后端通过 `state-changed` 事件推送。
       status: working(绿) | idle(黄) | blocked(红) | none(隐藏)
     -->
-    <div id="widget" class="widget is-none" role="status" aria-live="polite" title="拖动可移动；在托盘菜单里锁定位置" data-tauri-drag-region>
+    <div id="widget" class="widget is-none" role="status" aria-live="polite" title="拖动可移动；右键锁定位置" data-tauri-drag-region>
       <span class="lamp" aria-hidden="true"></span>
       <span class="label" id="label"></span>
+    </div>
+
+    <!-- 右键灯弹出的菜单（仅未锁定时可右键到） -->
+    <div id="ctxmenu" class="ctxmenu" hidden>
+      <button type="button" id="ctx-lock">🔒 锁定位置</button>
     </div>
 
     <!-- 验证用控制面板：仅在浏览器(非 Tauri)下显示 -->

@@ -41,6 +41,24 @@ fn notify_result(app: &AppHandle, result: Result<String, String>) {
     app.dialog().message(body).title(title).show(|_| {});
 }
 
+/// 托盘"锁定位置"勾选项句柄（放入 managed state，供命令同步勾选态）。
+struct LockToggle(tauri::menu::CheckMenuItem<tauri::Wry>);
+
+/// 前端右键灯调用：锁定/解锁。锁定 = 窗口点击穿透、不可选中/拖动。
+#[tauri::command]
+fn set_locked(
+    app: AppHandle,
+    shared: tauri::State<'_, Arc<Shared>>,
+    lock_toggle: tauri::State<'_, LockToggle>,
+    locked: bool,
+) {
+    shared.locked.store(locked, Ordering::Relaxed);
+    if let Some(win) = app.get_webview_window("light") {
+        let _ = win.set_ignore_cursor_events(locked);
+    }
+    let _ = lock_toggle.0.set_checked(locked);
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -50,6 +68,7 @@ fn main() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None::<Vec<&str>>,
         ))
+        .invoke_handler(tauri::generate_handler![set_locked])
         .setup(|app| {
             use tauri_plugin_autostart::ManagerExt;
 
@@ -145,6 +164,10 @@ fn main() {
                     }
                 })
                 .build(app)?;
+
+            // 供前端 set_locked 命令使用的 managed state。
+            app.manage(shared.clone());
+            app.manage(LockToggle(lock_item.clone()));
 
             // 本地状态端点(U3) + 状态机(U4) + 红灯通知(U7)。
             server::start(app.handle().clone(), shared, STATE_PORT);

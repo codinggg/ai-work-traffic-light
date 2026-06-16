@@ -62,6 +62,35 @@
     enableDemo();
   }
 
+  // 右键灯 -> 锁定位置（仅未锁定时能右键到；锁定后窗口点击穿透）。
+  setupContextMenu();
+
+  function setupContextMenu() {
+    var ctx = document.getElementById("ctxmenu");
+    var lockBtn = document.getElementById("ctx-lock");
+    if (!ctx || !lockBtn) return;
+    function hide() {
+      ctx.hidden = true;
+    }
+    widget.addEventListener("contextmenu", function (e) {
+      e.preventDefault();
+      ctx.style.left = e.clientX + "px";
+      ctx.style.top = e.clientY + "px";
+      ctx.hidden = false;
+    });
+    lockBtn.addEventListener("click", function () {
+      hide();
+      if (underTauri && window.__TAURI__.core) {
+        window.__TAURI__.core.invoke("set_locked", { locked: true });
+      }
+    });
+    window.addEventListener("click", hide);
+    window.addEventListener("blur", hide);
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") hide();
+    });
+  }
+
   function enableDemo() {
     document.body.classList.add("demo-mode");
     var demo = document.getElementById("demo");

@@ -121,6 +121,33 @@ body {
   }
 }
 
+/* ---- 右键菜单 ---- */
+.ctxmenu {
+  position: fixed;
+  z-index: 9999;
+  min-width: 124px;
+  padding: 4px;
+  background: rgba(28, 31, 37, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+.ctxmenu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  color: var(--label-fg);
+  font-size: 13px;
+  padding: 6px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.ctxmenu button:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
 /* ---- 演示控制面板（仅浏览器） ---- */
 .demo {
   position: fixed;
