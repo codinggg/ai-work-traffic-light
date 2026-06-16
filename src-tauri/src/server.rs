@@ -40,19 +40,19 @@ pub fn start(app: AppHandle, shared: Arc<Shared>, port: u16) {
                 store.aggregate()
             };
 
-            // 只在"刚进入红灯"的瞬间提醒，避免每个红事件都弹。
-            let entered_blocked = {
+            // 检测状态变化：进入红灯弹通知；任意状态切换(若开启)播放声音。
+            let (changed, entered_blocked) = {
                 let mut last = shared.last_status.lock().unwrap();
+                let changed = *last != agg.status;
                 let entered = agg.status == "blocked" && *last != "blocked";
                 *last = agg.status.clone();
-                entered
+                (changed, entered)
             };
             if entered_blocked {
-                notify_blocked(
-                    &app,
-                    &agg.session_label,
-                    shared.sound_enabled.load(Ordering::Relaxed),
-                );
+                notify_blocked(&app, &agg.session_label);
+            }
+            if changed && shared.sound_enabled.load(Ordering::Relaxed) {
+                play_sound(entered_blocked);
             }
 
             apply_effective(&app, &shared, agg);
@@ -95,8 +95,8 @@ fn apply_effective(app: &AppHandle, shared: &Shared, real: Aggregate) {
     }
 }
 
-/// 红灯：弹系统通知(含会话标识) + 可选提示音。
-fn notify_blocked(app: &AppHandle, label: &str, sound: bool) {
+/// 红灯：弹系统通知(含会话标识)。
+fn notify_blocked(app: &AppHandle, label: &str) {
     let body = if label.is_empty() {
         "有 Claude 会话在等待你的确认".to_string()
     } else {
@@ -108,16 +108,19 @@ fn notify_blocked(app: &AppHandle, label: &str, sound: bool) {
         .title("Claude 需要你")
         .body(body)
         .show();
+}
 
-    if sound {
-        #[cfg(windows)]
-        unsafe {
-            use windows::Win32::System::Diagnostics::Debug::MessageBeep;
-            use windows::Win32::UI::WindowsAndMessaging::MB_ICONWARNING;
-            let _ = MessageBeep(MB_ICONWARNING);
-        }
+/// 状态切换时播放系统提示音；红灯用更显眼的警告音，其它用提示音。
+#[cfg(windows)]
+fn play_sound(urgent: bool) {
+    use windows::Win32::System::Diagnostics::Debug::MessageBeep;
+    use windows::Win32::UI::WindowsAndMessaging::{MB_ICONASTERISK, MB_ICONWARNING};
+    unsafe {
+        let _ = MessageBeep(if urgent { MB_ICONWARNING } else { MB_ICONASTERISK });
     }
 }
+#[cfg(not(windows))]
+fn play_sound(_urgent: bool) {}
 
 /// 从 hook JSON 负载里取 session_id 与 cwd。
 fn parse_payload(body: &str) -> (String, Option<String>) {
