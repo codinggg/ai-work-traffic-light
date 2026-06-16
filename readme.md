@@ -13,3 +13,46 @@
 黄灯呢？该展示什么情况？
 
 这个该如何知道使用claude 的状态，用户安装了claude，vscode中也是用claude code。
+
+---
+
+## 实现说明（v1）
+
+用 **Tauri (Rust)** 做的 Windows 桌面常驻应用，通过 **Claude Code 官方 hooks** 感知状态：
+
+- 🟢 **绿灯**：Claude 正在工作（可以放心离开）
+- 🟡 **黄灯**：Claude 完成了这一轮 —— 该你了（不紧急）
+- 🔴 **红灯**：Claude 中途卡住、在等你确认（紧急，弹系统通知 + 可选提示音）
+- ⚫ **隐藏**：没有任何 Claude Code 会话在跑
+
+灯是一个常驻置顶的悬浮小窗，停在任务栏左下角（天气组件附近）。同时开多个会话时，灯显示最紧急的那个，并在红灯时标出是哪个项目在等你。
+
+> v1 仅支持 Windows；macOS/Linux、以及"点灯直接跳到对应 VSCode 窗口"已在计划中、后续实现。
+> 设计与计划见 [docs/brainstorms/](docs/brainstorms/) 与 [docs/plans/](docs/plans/)。
+
+## 前置
+
+- [Rust](https://rustup.rs/)（stable toolchain）
+- Node.js + [pnpm](https://pnpm.io/)
+- Windows 10/11（自带 WebView2）
+
+## 开发运行
+
+```bash
+pnpm install
+pnpm tauri dev      # 首次会编译 Rust 依赖，稍久
+```
+
+打包：`pnpm tauri build`
+
+## 启用状态检测
+
+1. 启动 app 后，右键**托盘图标** → **安装 hooks**（把上报 hooks 合并写入全局 `~/.claude/settings.json`，幂等、自动备份）
+2. **重启 Claude Code**（hooks 在会话启动时加载）
+3. 正常使用 Claude Code，灯就会随状态变化
+
+托盘菜单还提供：**提示音**开关、**开机自启**开关、**卸载 hooks**、**退出**。
+
+## 验证 hook 行为
+
+`spike/` 下有一个 hook 事件日志工具，可实测 Claude Code 各事件的触发时机与负载，用于校准事件→状态映射。见 [spike/README.md](spike/README.md)，结果记到 [docs/hook-spike-findings.md](docs/hook-spike-findings.md)。

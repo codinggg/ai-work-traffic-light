@@ -1,7 +1,7 @@
 ---
 title: "feat: AI Work Traffic Light — Claude Code 状态红绿灯桌面应用"
 type: feat
-status: active
+status: completed
 date: 2026-06-14
 deepened: 2026-06-14
 origin: docs/brainstorms/2026-06-14-ai-work-traffic-light-requirements.md
