@@ -15,8 +15,10 @@ use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowRect};
 /// 灯相对任务栏左缘的水平偏移（像素）：越过最左侧的天气/widgets 按钮，避免重叠。
 /// 想再左/右移就改这个值。
 const LEFT_MARGIN_PX: i32 = 180;
+/// 灯底部与任务栏顶边的间隙（像素）。
+const GAP_ABOVE_PX: i32 = 4;
 
-/// 贴到任务栏左侧、垂直居中。
+/// 放在任务栏正上方、靠左（不放进任务栏矩形内，否则会被任务栏盖住看不到）。
 pub fn position_over_taskbar(window: &WebviewWindow) {
     let Some(rect) = taskbar_rect() else {
         return;
@@ -25,9 +27,8 @@ pub fn position_over_taskbar(window: &WebviewWindow) {
         .outer_size()
         .unwrap_or(PhysicalSize::new(240, 44));
 
-    let taskbar_h = rect.bottom - rect.top;
-    let y = rect.top + ((taskbar_h - size.height as i32) / 2).max(0);
-    let x = rect.left + LEFT_MARGIN_PX; // 越过最左侧的天气/widgets，避免重叠
+    let x = rect.left + LEFT_MARGIN_PX; // 越过最左侧的天气/widgets
+    let y = (rect.top - size.height as i32 - GAP_ABOVE_PX).max(0); // 任务栏上方
 
     let _ = window.set_position(PhysicalPosition::new(x, y));
 }

@@ -31,14 +31,15 @@ body {
   user-select: none;
 }
 
-/* 悬浮灯容器：一个灯 + 可选标签，水平排列 */
+/* 悬浮灯容器：填满整个(透明)窗口，整窗都可拖动；灯+标签靠左 */
 .widget {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 7px;
+  width: 100%;
   height: 100%;
-  padding: 0 4px;
-  cursor: default; /* 点灯跳转(R12)是后续阶段，届时改为 pointer */
+  padding: 0 8px;
+  cursor: default;
   transition: opacity 180ms ease, transform 180ms ease;
 }
 
@@ -206,5 +207,6 @@ body.demo-mode .widget {
   position: fixed;
   top: 16px;
   left: 16px;
+  width: auto;
   height: 32px;
 }
