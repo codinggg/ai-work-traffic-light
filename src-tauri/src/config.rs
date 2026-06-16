@@ -55,3 +55,12 @@ pub fn save(cfg: &Config) {
         let _ = std::fs::write(&path, s);
     }
 }
+
+/// 启动时确保配置文件存在：exe 同目录没有 config.json 就用当前值(首次即默认值)新建一个。
+pub fn ensure(cfg: &Config) {
+    if let Some(path) = config_path() {
+        if !path.exists() {
+            save(cfg);
+        }
+    }
+}

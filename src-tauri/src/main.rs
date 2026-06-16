@@ -89,6 +89,8 @@ fn main() {
 
             // 读取上次保存的设置(提示音/锁定/位置)；首次运行回落默认值。
             let cfg = config::load();
+            // 首次运行(exe 同目录还没有 config.json)就建一个，方便用户看到/手改。
+            config::ensure(&cfg);
 
             // 共享状态：状态机 + 上次聚合状态(红灯进入检测) + 声音/锁定(从配置恢复)。
             let shared = Arc::new(Shared {
