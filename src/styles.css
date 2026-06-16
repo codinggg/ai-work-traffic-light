@@ -3,7 +3,7 @@
    状态: working(绿亮) / idle(黄亮) / blocked(红亮,脉冲) / neutral(三灯皆浅) / none(隐藏) */
 
 :root {
-  --lamp-size: 15px;
+  --lamp-size: 25px;
   --label-bg: rgba(20, 22, 27, 0.82);
   --label-fg: #e6edf3;
 }
@@ -47,7 +47,7 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 12px 7px;
+  padding: 8px 6px;
   background: #15171c;
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 9px;
