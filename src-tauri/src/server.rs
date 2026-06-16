@@ -15,6 +15,22 @@ use crate::state::Aggregate;
 use crate::Shared;
 
 pub fn start(app: AppHandle, shared: Arc<Shared>, port: u16) {
+    // transcript 轮询线程：hooks 不会在 API 报错(如 429)时触发，但错误会写进会话
+    // transcript。每 ~1.5s 读各活跃会话 transcript 的新增内容，发现 API 错误就把该
+    // 会话标记为 error(黄灯)并刷新显示。
+    {
+        let app = app.clone();
+        let shared = shared.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            let changed = shared.store.lock().unwrap().scan_api_errors();
+            if changed {
+                let agg = shared.store.lock().unwrap().aggregate();
+                apply_effective(&app, &shared, agg);
+            }
+        });
+    }
+
     std::thread::spawn(move || {
         let server = match tiny_http::Server::http(("127.0.0.1", port)) {
             Ok(s) => s,
@@ -32,11 +48,14 @@ pub fn start(app: AppHandle, shared: Arc<Shared>, port: u16) {
             let _ = req.respond(tiny_http::Response::empty(204));
 
             let Some(event) = event else { continue };
-            let (session_id, cwd) = parse_payload(&body);
+            let (session_id, cwd, transcript) = parse_payload(&body);
 
             let agg = {
                 let mut store = shared.store.lock().unwrap();
                 store.apply(&event, &session_id, cwd.as_deref());
+                if let Some(t) = &transcript {
+                    store.set_transcript(&session_id, t);
+                }
                 store.aggregate()
             };
 
@@ -122,8 +141,8 @@ fn play_sound(urgent: bool) {
 #[cfg(not(windows))]
 fn play_sound(_urgent: bool) {}
 
-/// 从 hook JSON 负载里取 session_id 与 cwd。
-fn parse_payload(body: &str) -> (String, Option<String>) {
+/// 从 hook JSON 负载里取 session_id、cwd 与 transcript_path。
+fn parse_payload(body: &str) -> (String, Option<String>, Option<String>) {
     let v: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
     let session_id = v
         .get("session_id")
@@ -131,5 +150,9 @@ fn parse_payload(body: &str) -> (String, Option<String>) {
         .unwrap_or("unknown")
         .to_string();
     let cwd = v.get("cwd").and_then(|x| x.as_str()).map(|s| s.to_string());
-    (session_id, cwd)
+    let transcript = v
+        .get("transcript_path")
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string());
+    (session_id, cwd, transcript)
 }

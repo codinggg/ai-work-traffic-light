@@ -127,6 +127,7 @@ body {
 /* 🎯 核心修改：点亮状态下，光线由内向外渐变暗 */
 .widget.is-working .lamp-green,
 .widget.is-idle .lamp-yellow,
+.widget.is-error .lamp-yellow,
 .widget.is-blocked .lamp-red {
   background-color: var(--off); /* 边缘保留暗色底色 */
   /* 确保外发光正常扩散，但内部由于 before 的 mix-blend-mode 作用，左上角依然会被压暗 */
@@ -155,9 +156,10 @@ body {
 
 /* 提醒闪烁：红灯/黄灯进入提醒态后闪烁吸引注意；当你切到工作窗口(VSCode/终端/Claude
    等，后端检测到并给 widget 加 .is-ack)时停闪、转为常亮 —— 红/黄闪，绿(工作中)不闪。
-   闪烁快慢由 :root 的 --blink-interval 控制。 */
+   (error 状态 = API 报错，复用黄灯闪烁。) 闪烁快慢由 :root 的 --blink-interval 控制。 */
 .widget.is-blocked:not(.is-ack) .lamp-red,
-.widget.is-idle:not(.is-ack) .lamp-yellow {
+.widget.is-idle:not(.is-ack) .lamp-yellow,
+.widget.is-error:not(.is-ack) .lamp-yellow {
   animation: blink var(--blink-interval) ease-in-out infinite;
 }
 
@@ -176,7 +178,8 @@ body {
 /* 系统开启"减少动态效果"时不闪，保留常亮的点亮态。 */
 @media (prefers-reduced-motion: reduce) {
   .widget.is-blocked .lamp-red,
-  .widget.is-idle .lamp-yellow {
+  .widget.is-idle .lamp-yellow,
+  .widget.is-error .lamp-yellow {
     animation: none;
   }
 }

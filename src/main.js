@@ -1,10 +1,11 @@
 // AI Work Traffic Light — 前端灯逻辑（无构建步骤，纯浏览器可跑）
 //
 // 聚合状态由后端(Tauri)通过 `state-changed` 事件推送：
-//   { status: "working" | "idle" | "blocked" | "none", sessionLabel?: string }
+//   { status: "working" | "idle" | "blocked" | "error" | "none", sessionLabel?: string }
 //     working = 绿（Claude 工作中）
 //     idle    = 黄（完成这轮 / 空闲，该你了）
 //     blocked = 红（卡住，等你 —— 带会话标识）
+//     error   = 黄（API 报错，如 429 限流/服务不可用 —— 来自扫 transcript）
 //     none    = 隐藏（无任何会话）
 //
 // 浏览器下(无 Tauri)自动进入演示模式，可手动切换各状态验证视觉。
@@ -16,6 +17,7 @@
     working: "is-working",
     idle: "is-idle",
     blocked: "is-blocked",
+    error: "is-error",
     neutral: "is-neutral",
     none: "is-none",
   };
@@ -32,6 +34,7 @@
       "is-working",
       "is-idle",
       "is-blocked",
+      "is-error",
       "is-neutral",
       "is-none",
       "has-label"
@@ -44,6 +47,9 @@
       labelEl.textContent = label;
       widget.classList.add("has-label");
       widget.setAttribute("title", "需要你：" + label);
+    } else if (status === "error") {
+      labelEl.textContent = "";
+      widget.setAttribute("title", "API 报错（限流/服务不可用）");
     } else {
       labelEl.textContent = "";
       widget.setAttribute("title", "AI Work Traffic Light");
