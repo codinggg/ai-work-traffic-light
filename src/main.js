@@ -77,6 +77,12 @@
       T.event.listen("state-changed", function (evt) {
         applyState(evt && evt.payload ? evt.payload : { status: "none" });
       });
+      // 后端检测到前台是工作窗口(VSCode/终端/Claude)时 payload=true -> 灯常亮(停闪)；
+      // 否则 false -> 红/黄灯恢复闪烁提醒。绿灯本来就不闪。
+      T.event.listen("focus-changed", function (evt) {
+        var atWork = !!(evt && evt.payload);
+        widget.classList.toggle("is-ack", atWork);
+      });
       return true;
     }
     return false;

@@ -3,6 +3,7 @@
 // 本地状态端点(U3) + 状态机(U4)，红灯通知(U7)，任务栏定位(U6)。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod config;
 mod installer;
 mod server;
 mod state;
@@ -15,14 +16,15 @@ use std::sync::{Arc, Mutex};
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager,
+    AppHandle, Emitter, Manager,
 };
 
 /// Claude Code 的 hook 把事件 POST 到这个本地端口（U3 监听 / U5 安装器写入）。
 pub const STATE_PORT: u16 = 48756;
 
 /// 跨线程共享状态：会话状态机 + 上次聚合状态(红灯进入检测) + 声音开关
-/// + 位置锁定 + 是否已自动定位过(避免每次显示都把用户拖动的位置拽回去)。
+/// + 位置锁定 + 是否已自动定位过(避免每次显示都把用户拖动的位置拽回去)
+/// + 最近窗口位置(用于持久化)。
 pub struct Shared {
     pub store: Mutex<state::Store>,
     pub last_status: Mutex<String>,
@@ -30,6 +32,17 @@ pub struct Shared {
     pub locked: AtomicBool,
     pub positioned: AtomicBool,
     pub manual_show: AtomicBool,
+    /// 最近一次窗口位置(物理像素)；窗口 Moved 时更新，定时器节流落盘到 config.json。
+    pub last_pos: Mutex<Option<(i32, i32)>>,
+}
+
+/// 把当前可持久化设置(提示音/锁定/位置)写回 exe 同目录的 config.json。
+fn persist(shared: &Shared) {
+    config::save(&config::Config {
+        sound_enabled: shared.sound_enabled.load(Ordering::Relaxed),
+        locked: shared.locked.load(Ordering::Relaxed),
+        pos: *shared.last_pos.lock().unwrap(),
+    });
 }
 
 /// 弹个原生消息框反馈安装/卸载结果。
@@ -58,6 +71,7 @@ fn set_locked(
         let _ = win.set_ignore_cursor_events(locked);
     }
     let _ = lock_toggle.0.set_checked(locked);
+    persist(&shared);
 }
 
 fn main() {
@@ -73,14 +87,18 @@ fn main() {
         .setup(|app| {
             use tauri_plugin_autostart::ManagerExt;
 
-            // 共享状态：状态机 + 上次聚合状态(红灯进入检测) + 声音开关。
+            // 读取上次保存的设置(提示音/锁定/位置)；首次运行回落默认值。
+            let cfg = config::load();
+
+            // 共享状态：状态机 + 上次聚合状态(红灯进入检测) + 声音/锁定(从配置恢复)。
             let shared = Arc::new(Shared {
                 store: Mutex::new(state::Store::default()),
                 last_status: Mutex::new("none".to_string()),
-                sound_enabled: AtomicBool::new(true),
-                locked: AtomicBool::new(false),
+                sound_enabled: AtomicBool::new(cfg.sound_enabled),
+                locked: AtomicBool::new(cfg.locked),
                 positioned: AtomicBool::new(false),
                 manual_show: AtomicBool::new(false),
+                last_pos: Mutex::new(cfg.pos),
             });
 
             // 托盘菜单：提示音 / 开机自启(勾选) + 安装/卸载 hooks + 退出。
@@ -101,9 +119,15 @@ fn main() {
                 autostart_on,
                 None::<&str>,
             )?;
-            // 锁定位置：默认不勾选(可拖动)；勾选后窗口点击穿透、不可选中。
-            let lock_item =
-                CheckMenuItem::with_id(app, "toggle_lock", "锁定位置", true, false, None::<&str>)?;
+            // 锁定位置：从配置恢复勾选态；勾选后窗口点击穿透、不可选中。
+            let lock_item = CheckMenuItem::with_id(
+                app,
+                "toggle_lock",
+                "锁定位置",
+                true,
+                shared.locked.load(Ordering::Relaxed),
+                None::<&str>,
+            )?;
             let install =
                 MenuItem::with_id(app, "install_hooks", "安装 hooks", true, None::<&str>)?;
             let uninstall =
@@ -156,6 +180,7 @@ fn main() {
                         let next = !shared_menu.sound_enabled.load(Ordering::Relaxed);
                         shared_menu.sound_enabled.store(next, Ordering::Relaxed);
                         let _ = sound_check.set_checked(next);
+                        persist(&shared_menu);
                     } else if id == "toggle_autostart" {
                         let on = app.autolaunch().is_enabled().unwrap_or(false);
                         let _ = if on {
@@ -172,6 +197,7 @@ fn main() {
                             let _ = win.set_ignore_cursor_events(next);
                         }
                         let _ = lock_check.set_checked(next);
+                        persist(&shared_menu);
                     } else if id == "install_hooks" {
                         notify_result(app, installer::install());
                     } else if id == "uninstall_hooks" {
@@ -186,20 +212,59 @@ fn main() {
             app.manage(shared.clone());
             app.manage(LockToggle(lock_item.clone()));
 
+            // 启动时：应用恢复的锁定态、还原上次窗口位置，并监听拖动以记录新位置。
+            if let Some(win) = app.get_webview_window("light") {
+                if shared.locked.load(Ordering::Relaxed) {
+                    let _ = win.set_ignore_cursor_events(true);
+                }
+                if let Some((x, y)) = cfg.pos {
+                    let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+                    // 已有保存位置 -> 别再自动贴任务栏，尊重用户上次拖到的位置。
+                    shared.positioned.store(true, Ordering::Relaxed);
+                }
+                let shared_move = shared.clone();
+                win.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Moved(pos) = event {
+                        *shared_move.last_pos.lock().unwrap() = Some((pos.x, pos.y));
+                    }
+                });
+            }
+
+            // 置顶/焦点检测线程要用的克隆（下面 server::start 会拿走 shared 本体）。
+            #[cfg(windows)]
+            let shared_timer = shared.clone();
+
             // 本地状态端点(U3) + 状态机(U4) + 红灯通知(U7)。
             server::start(app.handle().clone(), shared, STATE_PORT);
 
-            // 常驻最顶层：点任务栏会把任务栏抢到置顶最前、盖住灯，所以灯可见时
-            // 每 ~0.8s 把它重新顶回最前（不抢焦点）。仅 Windows 需要。
+            // 后台维护线程（仅 Windows）。每 ~0.8s：
+            //   1) 把灯顶回最前——点任务栏会把任务栏抢到置顶最前、盖住灯；
+            //   2) 检测前台是否「工作窗口」——是则通知前端灯常亮，否则闪烁；
+            //   3) 窗口位置变化则节流落盘到 config.json。
             #[cfg(windows)]
             {
                 let app_handle = app.handle().clone();
+                let mut saved_pos = *shared_timer.last_pos.lock().unwrap();
+                let mut last_at_work: Option<bool> = None; // None = 还没通知过前端
                 std::thread::spawn(move || loop {
                     std::thread::sleep(std::time::Duration::from_millis(800));
+
                     if let Some(win) = app_handle.get_webview_window("light") {
                         if win.is_visible().unwrap_or(false) {
                             taskbar::reassert_topmost(&win);
                         }
+                    }
+
+                    let at_work = taskbar::foreground_is_work_window();
+                    if last_at_work != Some(at_work) {
+                        last_at_work = Some(at_work);
+                        let _ = app_handle.emit("focus-changed", at_work);
+                    }
+
+                    let cur = *shared_timer.last_pos.lock().unwrap();
+                    if cur != saved_pos {
+                        saved_pos = cur;
+                        persist(&shared_timer);
                     }
                 });
             }

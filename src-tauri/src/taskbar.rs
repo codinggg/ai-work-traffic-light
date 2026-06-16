@@ -74,3 +74,65 @@ fn taskbar_rect() -> Option<RECT> {
         Some(rect)
     }
 }
+
+/// 被视为「工作窗口」的前台进程名（小写，带 .exe）。
+/// 用途：用户切到这些窗口时，提醒灯停止闪烁、转为常亮（说明人已经在看了）。
+/// 想加别的编辑器/终端，往这里加进程名即可。
+const WORK_PROCESSES: &[&str] = &[
+    "code.exe",            // VS Code
+    "code - insiders.exe", // VS Code Insiders
+    "cursor.exe",          // Cursor
+    "windsurf.exe",        // Windsurf
+    "claude.exe",          // Claude 桌面端
+    "windowsterminal.exe", // Windows Terminal
+    "wt.exe",
+    "powershell.exe",
+    "pwsh.exe",
+    "cmd.exe",
+];
+
+/// 当前前台窗口是否属于「工作窗口」(编辑器/终端)。
+/// 取前台窗口的进程可执行文件名，和 WORK_PROCESSES 比对。任何一步失败都按 false。
+pub fn foreground_is_work_window() -> bool {
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.0.is_null() {
+            return false;
+        }
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 {
+            return false;
+        }
+        let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return false;
+        };
+
+        // 取进程可执行文件全路径，再截最后一段文件名做比对。
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        let ok =
+            QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len)
+                .is_ok();
+        let _ = CloseHandle(handle);
+        if !ok {
+            return false;
+        }
+
+        let path = String::from_utf16_lossy(&buf[..len as usize]);
+        let name = path
+            .rsplit(['\\', '/'])
+            .next()
+            .unwrap_or("")
+            .to_lowercase();
+        WORK_PROCESSES.contains(&name.as_str())
+    }
+}
