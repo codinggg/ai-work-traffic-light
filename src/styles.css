@@ -104,18 +104,18 @@ body {
 }
 
 .lamp-red {
-  --on: #e5392e;
-  --off: #3b2e2e;
+  --on: #ff1403;
+  --off: #3b2e2ede;
   --glow: rgba(229, 57, 46, 0.8);
 }
 .lamp-yellow {
-  --on: #e0a51f;
-  --off: #403d31;
+  --on: #ffb300;
+  --off: #403d31d8;
   --glow: rgba(224, 165, 31, 0.75);
 }
 .lamp-green {
-  --on: #2ea043;
-  --off: #313d34;
+  --on: #00ff2f;
+  --off: #313d34d6;
   --glow: rgba(46, 160, 67, 0.8);
 }
 
