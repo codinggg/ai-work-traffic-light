@@ -71,7 +71,13 @@ pub fn start(app: AppHandle, shared: Arc<Shared>, port: u16) {
                 notify_blocked(&app, &agg.session_label);
             }
             if changed && shared.sound_enabled.load(Ordering::Relaxed) {
-                play_sound(entered_blocked);
+                // 红灯用 urgent 音，其它用普通音；各自可在 config.json 里指定自定义 .wav。
+                let custom = if entered_blocked {
+                    shared.sound_urgent_file.as_deref()
+                } else {
+                    shared.sound_file.as_deref()
+                };
+                play_sound(entered_blocked, custom);
             }
 
             apply_effective(&app, &shared, agg);
@@ -129,9 +135,22 @@ fn notify_blocked(app: &AppHandle, label: &str) {
         .show();
 }
 
-/// 状态切换时播放系统提示音；红灯用更显眼的警告音，其它用提示音。
+/// 状态切换时播放提示音。
+/// 优先放自定义 .wav(config.json 里配的 sound_file / sound_urgent_file 且文件存在)；
+/// 否则回落到系统提示音：红灯用更显眼的警告音，其它用普通提示音。
 #[cfg(windows)]
-fn play_sound(urgent: bool) {
+fn play_sound(urgent: bool, custom: Option<&str>) {
+    if let Some(path) = custom {
+        if !path.is_empty() && std::path::Path::new(path).exists() {
+            use windows::core::HSTRING;
+            use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_FILENAME, SND_NODEFAULT};
+            let wide = HSTRING::from(path);
+            unsafe {
+                let _ = PlaySoundW(&wide, None, SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
+            }
+            return;
+        }
+    }
     use windows::Win32::System::Diagnostics::Debug::MessageBeep;
     use windows::Win32::UI::WindowsAndMessaging::{MB_ICONASTERISK, MB_ICONWARNING};
     unsafe {
@@ -139,7 +158,7 @@ fn play_sound(urgent: bool) {
     }
 }
 #[cfg(not(windows))]
-fn play_sound(_urgent: bool) {}
+fn play_sound(_urgent: bool, _custom: Option<&str>) {}
 
 /// 从 hook JSON 负载里取 session_id、cwd 与 transcript_path。
 fn parse_payload(body: &str) -> (String, Option<String>, Option<String>) {

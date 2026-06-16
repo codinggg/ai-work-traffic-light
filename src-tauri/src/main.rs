@@ -34,14 +34,19 @@ pub struct Shared {
     pub manual_show: AtomicBool,
     /// 最近一次窗口位置(物理像素)；窗口 Moved 时更新，定时器节流落盘到 config.json。
     pub last_pos: Mutex<Option<(i32, i32)>>,
+    /// 自定义提示音(.wav)路径：普通切换用 / 红灯用。启动时从配置读入，运行期不改。
+    pub sound_file: Option<String>,
+    pub sound_urgent_file: Option<String>,
 }
 
-/// 把当前可持久化设置(提示音/锁定/位置)写回 exe 同目录的 config.json。
+/// 把当前可持久化设置(提示音/锁定/位置/自定义音)写回 exe 同目录的 config.json。
 fn persist(shared: &Shared) {
     config::save(&config::Config {
         sound_enabled: shared.sound_enabled.load(Ordering::Relaxed),
         locked: shared.locked.load(Ordering::Relaxed),
         pos: *shared.last_pos.lock().unwrap(),
+        sound_file: shared.sound_file.clone(),
+        sound_urgent_file: shared.sound_urgent_file.clone(),
     });
 }
 
@@ -102,6 +107,8 @@ fn main() {
                 // 启动即显示灯：manual_show 默认开，无会话时也以 neutral 灰态常驻。
                 manual_show: AtomicBool::new(true),
                 last_pos: Mutex::new(cfg.pos),
+                sound_file: cfg.sound_file.clone(),
+                sound_urgent_file: cfg.sound_urgent_file.clone(),
             });
 
             // 托盘菜单：提示音 / 开机自启(勾选) + 安装/卸载 hooks + 退出。

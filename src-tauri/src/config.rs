@@ -17,6 +17,10 @@ pub struct Config {
     pub locked: bool,
     /// 窗口位置(物理像素) (x, y)；None 表示还没存过 -> 首次显示时自动贴任务栏。
     pub pos: Option<(i32, i32)>,
+    /// 自定义提示音(.wav)文件路径：普通状态切换(绿/黄)用。None/文件不存在则用系统提示音。
+    pub sound_file: Option<String>,
+    /// 自定义提示音(.wav)：红灯(等你确认)用，可设更显眼的声音。None 则用系统警告音。
+    pub sound_urgent_file: Option<String>,
 }
 
 impl Default for Config {
@@ -25,6 +29,8 @@ impl Default for Config {
             sound_enabled: true,
             locked: false,
             pos: None,
+            sound_file: None,
+            sound_urgent_file: None,
         }
     }
 }
