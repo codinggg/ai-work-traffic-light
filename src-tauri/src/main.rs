@@ -60,6 +60,32 @@ fn notify_result(app: &AppHandle, result: Result<String, String>) {
     app.dialog().message(body).title(title).show(|_| {});
 }
 
+// ===== 「关于」对话框内容 —— 想改 app 信息(标题/版本/作者/说明)就改这里 =====
+const ABOUT_TITLE: &str = "关于";
+/// 版本号取自 Cargo.toml；其余文字直接在这里改。
+fn about_body() -> String {
+    format!(
+        "AI 工作红绿灯 (AI Work Traffic Light)\n\
+         版本 {ver}\n\
+         \n\
+         用红绿灯显示 Claude Code 的工作状态，需要你时及时提醒：\n\
+         🟢 工作中　🟡 该你了　🔴 等你确认\n\
+         \n\
+         作者：alex\n\
+         技术：Tauri (Rust) + Claude Code hooks",
+        ver = env!("CARGO_PKG_VERSION"),
+    )
+}
+
+/// 弹「关于」对话框（信息见 about_body）。
+fn show_about(app: &AppHandle) {
+    use tauri_plugin_dialog::DialogExt;
+    app.dialog()
+        .message(about_body())
+        .title(ABOUT_TITLE)
+        .show(|_| {});
+}
+
 /// 托盘"锁定位置"勾选项句柄（放入 managed state，供命令同步勾选态）。
 struct LockToggle(tauri::menu::CheckMenuItem<tauri::Wry>);
 
@@ -158,8 +184,10 @@ fn main() {
             let uninstall =
                 MenuItem::with_id(app, "uninstall_hooks", "卸载 hooks", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+            let about = MenuItem::with_id(app, "about", "关于", true, None::<&str>)?;
             let sep1 = PredefinedMenuItem::separator(app)?;
             let sep2 = PredefinedMenuItem::separator(app)?;
+            let sep3 = PredefinedMenuItem::separator(app)?;
             let menu = Menu::with_items(
                 app,
                 &[
@@ -171,6 +199,8 @@ fn main() {
                     &uninstall,
                     &sep2,
                     &quit,
+                    &sep3,
+                    &about,
                 ],
             )?;
 
@@ -261,6 +291,8 @@ fn main() {
                         notify_result(app, installer::uninstall());
                     } else if id == "quit" {
                         app.exit(0);
+                    } else if id == "about" {
+                        show_about(app);
                     }
                 })
                 .build(app)?;
