@@ -6,10 +6,9 @@
   --lamp-size: 25px;
   --label-bg: rgba(20, 22, 27, 0.82);
   --label-fg: #e6edf3;
-  /* 提醒灯(红/黄)的闪烁周期 = 一次"亮+灭"的总时长。想闪快改小、慢改大；绿灯永不闪。 */
+  /* 提醒灯(红/黄)的闪烁周期 = 一次"亮 + 灭(回到灯的初始样式)"的总时长。
+     想闪快改小、慢改大；绿灯永不闪。 */
   --blink-interval: 1s;
-  /* 闪烁"灭"阶段的亮度(0=全灭看不见, 1=和亮时一样)。想灭得更彻底改小、想只是暗一点改大。 */
-  --blink-dim: 0.15;
 }
 
 * {
@@ -165,17 +164,39 @@ body {
   animation: blink var(--blink-interval) linear infinite;
 }
 
-/* 像真实红绿灯那样干脆地"亮一下暗一下"：前半周期全亮，后半周期变暗，
-   两段之间几乎瞬间切换(0.01% 的过渡)，形成方波式闪烁，而不是渐亮渐暗的呼吸。
-   占空比固定 50/50；亮/灭时长一起由 --blink-interval 控制，灭的程度由 --blink-dim 控制。 */
+/* 真实红绿灯式的"亮一下暗一下"：前半周期点亮，后半周期回到灯的初始(未点亮)样式——
+   是变暗的本色灯，不是变透明/变黑。两半在 50% 处近乎瞬间切换，形成 50/50 方波闪烁。
+   注意：下面"亮"这半段镜像点亮态(.is-blocked .lamp-red 等)，"暗"这半段镜像 .lamp 初始态；
+        如果你调了那两处的渐变/阴影，记得同步改这里，才能让闪烁的两态和静态一致。 */
 @keyframes blink {
   0%,
   50% {
-    opacity: 1;
+    /* 亮：点亮态 */
+    background-color: var(--off);
+    background-image: radial-gradient(
+        circle at 40% 46%,
+        rgba(255, 255, 255, 0.35),
+        rgba(255, 255, 255, 0) 50%
+      ),
+      radial-gradient(
+        circle at 45% 50%,
+        var(--on) 0%,
+        var(--on) 50%,
+        rgba(0, 0, 0, 0.4) 85%,
+        transparent 100%
+      );
+    box-shadow: 0 0 3px 0px var(--glow), inset 0 -1px 2px rgba(0, 0, 0, 0.45);
   }
   50.01%,
   100% {
-    opacity: var(--blink-dim);
+    /* 暗：灯的初始样式(未点亮的本色 --off + 玻璃高光 + 内阴影)，不是黑 */
+    background-color: var(--off);
+    background-image: radial-gradient(
+      circle at 40% 46%,
+      rgba(255, 255, 255, 0.45),
+      rgba(255, 255, 255, 0) 50%
+    );
+    box-shadow: inset 0 0 4px rgba(0, 0, 0, 0.6), inset 0 -1px 2px rgba(0, 0, 0, 0.45);
   }
 }
 /* 系统开启"减少动态效果"时不闪，保留常亮的点亮态。 */

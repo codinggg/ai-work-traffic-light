@@ -171,12 +171,6 @@
       </div>
 
       <div class="row">
-        <span class="row-label">熄灭亮度</span>
-        <input type="range" id="dim" min="0" max="1" step="0.01" />
-        <span class="val" id="dim-val"></span>
-      </div>
-
-      <div class="row">
         <span class="row-label">红灯标签</span>
         <input type="text" id="label-input" value="ai-work-traffic-light" />
         <span class="val" style="opacity: 0.6">(红灯时显示)</span>
@@ -254,11 +248,9 @@
           if (current === "blocked") apply("blocked");
         });
 
-        // 实时调 --blink-interval / --blink-dim，并显示当前值
+        // 实时调 --blink-interval，并显示当前值
         var interval = document.getElementById("interval");
         var intervalVal = document.getElementById("interval-val");
-        var dim = document.getElementById("dim");
-        var dimVal = document.getElementById("dim-val");
 
         function readVar(name, fallback) {
           var v = getComputedStyle(root).getPropertyValue(name).trim();
@@ -266,19 +258,12 @@
         }
         // 初值取自 styles.css 里的 :root
         interval.value = parseFloat(readVar("--blink-interval", "1")) || 1;
-        dim.value = parseFloat(readVar("--blink-dim", "0.15"));
-        if (isNaN(dim.value)) dim.value = 0.15;
 
         function syncInterval() {
           root.style.setProperty("--blink-interval", interval.value + "s");
           intervalVal.textContent = (+interval.value).toFixed(1) + "s";
         }
-        function syncDim() {
-          root.style.setProperty("--blink-dim", dim.value);
-          dimVal.textContent = (+dim.value).toFixed(2);
-        }
         interval.addEventListener("input", syncInterval);
-        dim.addEventListener("input", syncDim);
 
         // 右键不弹浏览器菜单（和真实灯一致）
         window.addEventListener("contextmenu", function (e) {
@@ -286,7 +271,6 @@
         });
 
         syncInterval();
-        syncDim();
         apply("blocked"); // 打开即红灯闪，方便先看闪烁
       })();
     </script>
