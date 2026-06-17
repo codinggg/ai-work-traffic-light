@@ -136,15 +136,15 @@ fn notify_blocked(app: &AppHandle, label: &str) {
 }
 
 /// 状态切换时播放提示音。
-/// 优先放自定义 .wav(config.json 里配的 sound_file / sound_urgent_file 且文件存在)；
+/// 优先放自定义音：把 config 值(audio/ 下文件名或绝对路径)解析成真实文件再放；
 /// 否则回落到系统提示音：红灯用更显眼的警告音，其它用普通提示音。
 #[cfg(windows)]
 fn play_sound(urgent: bool, custom: Option<&str>) {
-    if let Some(path) = custom {
-        if !path.is_empty() && std::path::Path::new(path).exists() {
+    if let Some(value) = custom {
+        if let Some(path) = crate::config::resolve_sound(value) {
             use windows::core::HSTRING;
             use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_FILENAME, SND_NODEFAULT};
-            let wide = HSTRING::from(path);
+            let wide = HSTRING::from(path.to_string_lossy().as_ref());
             unsafe {
                 let _ = PlaySoundW(&wide, None, SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
             }
@@ -160,9 +160,9 @@ fn play_sound(urgent: bool, custom: Option<&str>) {
 #[cfg(not(windows))]
 fn play_sound(_urgent: bool, _custom: Option<&str>) {}
 
-/// 试听一个自定义提示音文件(托盘里选好后放一次让用户确认)。
-pub fn preview_sound(path: &str) {
-    play_sound(false, Some(path));
+/// 试听一个自定义提示音(托盘里选好后放一次让用户确认)；传 config 值(文件名或路径)。
+pub fn preview_sound(value: &str) {
+    play_sound(false, Some(value));
 }
 
 /// 从 hook JSON 负载里取 session_id、cwd 与 transcript_path。

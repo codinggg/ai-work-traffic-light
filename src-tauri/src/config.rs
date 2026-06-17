@@ -17,9 +17,10 @@ pub struct Config {
     pub locked: bool,
     /// 窗口位置(物理像素) (x, y)；None 表示还没存过 -> 首次显示时自动贴任务栏。
     pub pos: Option<(i32, i32)>,
-    /// 自定义提示音(.wav)文件路径：普通状态切换(绿/黄)用。None/文件不存在则用系统提示音。
+    /// 自定义提示音：普通状态切换(绿/黄)用。存 audio/ 下的文件名(如 "ding.wav")，
+    /// 也兼容写绝对路径。None/解析不到文件则用系统提示音。
     pub sound_file: Option<String>,
-    /// 自定义提示音(.wav)：红灯(等你确认)用，可设更显眼的声音。None 则用系统警告音。
+    /// 自定义提示音：红灯(等你确认)用，可设更显眼的。规则同 sound_file。None 用系统警告音。
     pub sound_urgent_file: Option<String>,
 }
 
@@ -35,10 +36,62 @@ impl Default for Config {
     }
 }
 
+/// exe 所在目录。
+fn exe_dir() -> Option<PathBuf> {
+    Some(std::env::current_exe().ok()?.parent()?.to_path_buf())
+}
+
 /// exe 同目录下的 config.json 路径。
 fn config_path() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    Some(exe.parent()?.join("config.json"))
+    Some(exe_dir()?.join("config.json"))
+}
+
+/// exe 同目录下存放自定义提示音的 audio/ 文件夹。
+pub fn audio_dir() -> Option<PathBuf> {
+    Some(exe_dir()?.join("audio"))
+}
+
+/// 启动时确保 audio/ 文件夹存在（不存在就建）。
+pub fn ensure_audio_dir() {
+    if let Some(d) = audio_dir() {
+        let _ = std::fs::create_dir_all(d);
+    }
+}
+
+/// 把 config 里的提示音取值解析成真实存在的文件路径：
+/// - 空 -> None；
+/// - 含路径分隔符/绝对路径：原样用(存在才返回)，兼容外部绝对路径；
+/// - 否则当作 audio/ 下的文件名。
+pub fn resolve_sound(value: &str) -> Option<PathBuf> {
+    let v = value.trim();
+    if v.is_empty() {
+        return None;
+    }
+    if std::path::Path::new(v).is_absolute() || v.contains('/') || v.contains('\\') {
+        let p = PathBuf::from(v);
+        return p.exists().then_some(p);
+    }
+    let f = audio_dir()?.join(v);
+    f.exists().then_some(f)
+}
+
+/// 把用户选中的音频复制进 audio/，返回文件名(config 里存这个名字)。
+/// 若来源已经就在 audio/ 里，则只返回文件名、不重复拷贝。
+pub fn import_sound(src: &std::path::Path) -> Option<String> {
+    let name = src.file_name()?.to_string_lossy().to_string();
+    let dir = audio_dir()?;
+    let _ = std::fs::create_dir_all(&dir);
+    let dest = dir.join(&name);
+    let same = src
+        .canonicalize()
+        .ok()
+        .zip(dest.canonicalize().ok())
+        .map(|(a, b)| a == b)
+        .unwrap_or(false);
+    if !same && std::fs::copy(src, &dest).is_err() {
+        return None;
+    }
+    Some(name)
 }
 
 /// 读配置；文件不存在/解析失败都回落到默认值。

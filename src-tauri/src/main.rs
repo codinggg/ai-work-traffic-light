@@ -96,6 +96,8 @@ fn main() {
             let cfg = config::load();
             // 首次运行(exe 同目录还没有 config.json)就建一个，方便用户看到/手改。
             config::ensure(&cfg);
+            // 确保 audio/ 文件夹存在：自定义提示音放这里，config 里只记文件名。
+            config::ensure_audio_dir();
 
             // 共享状态：状态机 + 上次聚合状态(红灯进入检测) + 声音/锁定(从配置恢复)。
             let shared = Arc::new(Shared {
@@ -237,14 +239,17 @@ fn main() {
                             .pick_file(move |path| {
                                 let Some(fp) = path else { return };
                                 let Ok(pb) = fp.into_path() else { return };
-                                let s = pb.to_string_lossy().to_string();
+                                // 复制进 audio/，config 里只存文件名 -> 整个程序目录可整体搬走。
+                                let Some(name) = config::import_sound(&pb) else {
+                                    return;
+                                };
                                 if urgent {
-                                    *sh.sound_urgent_file.lock().unwrap() = Some(s.clone());
+                                    *sh.sound_urgent_file.lock().unwrap() = Some(name.clone());
                                 } else {
-                                    *sh.sound_file.lock().unwrap() = Some(s.clone());
+                                    *sh.sound_file.lock().unwrap() = Some(name.clone());
                                 }
                                 persist(&sh);
-                                server::preview_sound(&s); // 试听
+                                server::preview_sound(&name); // 试听
                             });
                     } else if id == "reset_sound" {
                         *shared_menu.sound_file.lock().unwrap() = None;
