@@ -105,35 +105,11 @@
     return false;
   }
 
-  // 右键灯 -> 锁定位置（仅未锁定时能右键到；锁定后窗口点击穿透）。
-  setupContextMenu();
-
-  function setupContextMenu() {
-    var ctx = document.getElementById("ctxmenu");
-    var lockBtn = document.getElementById("ctx-lock");
-    if (!ctx || !lockBtn) return;
-    function hide() {
-      ctx.hidden = true;
-    }
-    widget.addEventListener("contextmenu", function (e) {
-      e.preventDefault();
-      ctx.style.left = e.clientX + "px";
-      ctx.style.top = e.clientY + "px";
-      ctx.hidden = false;
-    });
-    lockBtn.addEventListener("click", function () {
-      hide();
-      var T = window.__TAURI__;
-      if (T && T.core && typeof T.core.invoke === "function") {
-        T.core.invoke("set_locked", { locked: true });
-      }
-    });
-    window.addEventListener("click", hide);
-    window.addEventListener("blur", hide);
-    document.addEventListener("keydown", function (e) {
-      if (e.key === "Escape") hide();
-    });
-  }
+  // 禁用右键：红绿灯不弹浏览器(WebView)右键菜单，右键无任何操作。
+  // （锁定位置等改从托盘右键菜单走，灯本身右键不再有菜单。）
+  window.addEventListener("contextmenu", function (e) {
+    e.preventDefault();
+  });
 
   function enableDemo() {
     document.body.classList.add("demo-mode");
