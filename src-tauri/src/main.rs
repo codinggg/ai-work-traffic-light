@@ -285,6 +285,19 @@ fn main() {
                         *shared_move.last_pos.lock().unwrap() = Some((pos.x, pos.y));
                     }
                 });
+
+                // 关掉 WebView2 默认右键菜单(返回/刷新/打印…)：引擎级，打包版同样生效。
+                #[cfg(windows)]
+                {
+                    let _ = win.with_webview(|webview| unsafe {
+                        let controller = webview.controller();
+                        if let Ok(core) = controller.CoreWebView2() {
+                            if let Ok(settings) = core.Settings() {
+                                let _ = settings.SetAreDefaultContextMenusEnabled(false);
+                            }
+                        }
+                    });
+                }
             }
 
             // 启动即显示灯：刷新一次把窗口摆到位并显示（无会话时为 neutral 灰态）。

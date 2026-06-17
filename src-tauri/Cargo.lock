@@ -29,6 +29,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-notification",
  "tiny_http",
+ "webview2-com",
  "windows 0.58.0",
 ]
 

@@ -26,6 +26,8 @@ windows = { version = "0.58", features = [
     "Win32_System_Threading",
     "Win32_Media_Audio",
 ] }
+# 关掉 WebView2 默认右键菜单(返回/刷新/打印…)。版本对齐 tauri 2.11 自带的 webview2-com。
+webview2-com = "0.38"
 
 [profile.release]
 opt-level = "s"

@@ -106,10 +106,16 @@
   }
 
   // 禁用右键：红绿灯不弹浏览器(WebView)右键菜单，右键无任何操作。
-  // （锁定位置等改从托盘右键菜单走，灯本身右键不再有菜单。）
-  window.addEventListener("contextmenu", function (e) {
-    e.preventDefault();
-  });
+  // 用捕获阶段在 document 上拦下，确保最先吃到事件并取消默认菜单。
+  // （引擎级还会在 Rust 里关掉 WebView2 默认菜单做双保险；锁定改走托盘菜单。）
+  document.addEventListener(
+    "contextmenu",
+    function (e) {
+      e.preventDefault();
+      return false;
+    },
+    true
+  );
 
   function enableDemo() {
     document.body.classList.add("demo-mode");
