@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>红绿灯 · 测试台</title>
+    <!-- 复用真实样式：测的就是 app 里那套灯 + 闪烁效果 -->
+    <link rel="stylesheet" href="./src/styles.css" />
+    <style>
+      /* 这个文件是独立测试页：直接用浏览器打开即可，不需要 Tauri/服务。 */
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: #0d1117;
+        color: #c9d1d9;
+        font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 22px;
+        padding: 32px 16px 48px;
+        box-sizing: border-box;
+      }
+      h1 {
+        font-size: 16px;
+        font-weight: 600;
+        opacity: 0.85;
+        margin: 0;
+      }
+      .hint {
+        font-size: 13px;
+        opacity: 0.6;
+        margin: -12px 0 0;
+        text-align: center;
+        line-height: 1.6;
+      }
+
+      /* 灯放大、可点击：styles.css 里 .lamp 是 pointer-events:none，这里用更高优先级打开 */
+      #widget {
+        --lamp-size: 46px;
+        width: auto;
+        height: auto;
+      }
+      #widget .housing,
+      #widget .lamp {
+        pointer-events: auto;
+      }
+      #widget .lamp {
+        cursor: pointer;
+      }
+      #widget .housing {
+        gap: 10px;
+        padding: 14px 12px;
+        border-radius: 16px;
+      }
+
+      .stage {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        min-height: 80px;
+      }
+
+      .panel {
+        display: grid;
+        gap: 14px;
+        width: min(560px, 92vw);
+        padding: 18px 20px;
+        background: rgba(20, 22, 27, 0.9);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 12px;
+      }
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+      }
+      .row > .row-label {
+        flex: 0 0 96px;
+        font-size: 13px;
+        opacity: 0.8;
+      }
+      button {
+        cursor: pointer;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: #21262d;
+        color: #e6edf3;
+        padding: 7px 12px;
+        border-radius: 8px;
+        font-size: 13px;
+      }
+      button:hover {
+        background: #30363d;
+      }
+      button.active {
+        outline: 2px solid #58a6ff;
+        outline-offset: 1px;
+      }
+      input[type="range"] {
+        flex: 1;
+        min-width: 140px;
+      }
+      input[type="text"] {
+        flex: 1;
+        min-width: 140px;
+        background: #0d1117;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        color: #e6edf3;
+        border-radius: 6px;
+        padding: 6px 9px;
+      }
+      .val {
+        font-variant-numeric: tabular-nums;
+        opacity: 0.85;
+        min-width: 56px;
+        text-align: right;
+        font-size: 13px;
+      }
+      label.chk {
+        display: inline-flex;
+        gap: 6px;
+        align-items: center;
+        font-size: 13px;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>🚦 红绿灯测试台</h1>
+    <p class="hint">
+      直接点灯：点哪个灯，哪个灯就亮（红/黄会闪、绿常亮）；再点同一个灯熄灭。<br />
+      下面也能一键切状态、开关"常亮"对比闪烁，并实时调闪烁速度与熄灭亮度。
+    </p>
+
+    <div class="stage">
+      <!-- 和 app 里同样的结构；lamp 上加 data-status 以便点击点亮对应状态 -->
+      <div id="widget" class="widget is-neutral" role="status">
+        <span class="housing">
+          <span class="lamp lamp-red" data-status="blocked" title="点亮红灯(闪)"></span>
+          <span class="lamp lamp-yellow" data-status="idle" title="点亮黄灯(闪)"></span>
+          <span class="lamp lamp-green" data-status="working" title="点亮绿灯(常亮)"></span>
+        </span>
+        <span class="label" id="label"></span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="row">
+        <span class="row-label">状态</span>
+        <button data-status="blocked">🔴 红灯闪 (等你)</button>
+        <button data-status="idle">🟡 黄灯闪 (该你了)</button>
+        <button data-status="working">🟢 绿灯亮 (工作中)</button>
+        <button data-status="error">🟡 API 报错 (黄闪)</button>
+        <button data-status="neutral">⚫ 全灭 (neutral)</button>
+        <button data-status="none">隐藏 (none)</button>
+      </div>
+
+      <div class="row">
+        <span class="row-label">对比</span>
+        <label class="chk">
+          <input type="checkbox" id="ack" />
+          常亮 (.is-ack：模拟切到工作窗口，停闪转常亮)
+        </label>
+      </div>
+
+      <div class="row">
+        <span class="row-label">闪烁周期</span>
+        <input type="range" id="interval" min="0.2" max="3" step="0.1" />
+        <span class="val" id="interval-val"></span>
+      </div>
+
+      <div class="row">
+        <span class="row-label">红灯标签</span>
+        <input type="text" id="label-input" value="ai-work-traffic-light" />
+        <span class="val" style="opacity: 0.6">(红灯时显示)</span>
+      </div>
+    </div>
+
+    <script>
+      (function () {
+        "use strict";
+        var widget = document.getElementById("widget");
+        var labelEl = document.getElementById("label");
+        var labelInput = document.getElementById("label-input");
+        var root = document.documentElement;
+
+        var STATUS_CLASS = {
+          working: "is-working",
+          idle: "is-idle",
+          blocked: "is-blocked",
+          error: "is-error",
+          neutral: "is-neutral",
+          none: "is-none",
+        };
+        var ALL = Object.keys(STATUS_CLASS).map(function (k) {
+          return STATUS_CLASS[k];
+        });
+        var current = "neutral";
+
+        function apply(status) {
+          current = status;
+          widget.classList.remove.apply(widget.classList, ALL);
+          widget.classList.remove("has-label");
+          widget.classList.add(STATUS_CLASS[status] || "is-neutral");
+          var label = labelInput.value || "";
+          if (status === "blocked" && label) {
+            labelEl.textContent = label;
+            widget.classList.add("has-label");
+          } else {
+            labelEl.textContent = "";
+          }
+          markActive();
+        }
+
+        function markActive() {
+          var btns = document.querySelectorAll(".panel button[data-status]");
+          Array.prototype.forEach.call(btns, function (b) {
+            b.classList.toggle("active", b.getAttribute("data-status") === current);
+          });
+        }
+
+        // 点灯：点哪个灯亮哪个；再点已亮的灯就熄灭(neutral)。
+        Array.prototype.forEach.call(widget.querySelectorAll(".lamp"), function (lamp) {
+          lamp.addEventListener("click", function () {
+            var s = lamp.getAttribute("data-status");
+            apply(current === s ? "neutral" : s);
+          });
+        });
+
+        // 按钮切状态
+        Array.prototype.forEach.call(
+          document.querySelectorAll(".panel button[data-status]"),
+          function (btn) {
+            btn.addEventListener("click", function () {
+              apply(btn.getAttribute("data-status"));
+            });
+          }
+        );
+
+        // 常亮开关
+        document.getElementById("ack").addEventListener("change", function (e) {
+          widget.classList.toggle("is-ack", e.target.checked);
+        });
+
+        // 红灯标签实时更新
+        labelInput.addEventListener("input", function () {
+          if (current === "blocked") apply("blocked");
+        });
+
+        // 实时调 --blink-interval，并显示当前值
+        var interval = document.getElementById("interval");
+        var intervalVal = document.getElementById("interval-val");
+
+        function readVar(name, fallback) {
+          var v = getComputedStyle(root).getPropertyValue(name).trim();
+          return v || fallback;
+        }
+        // 初值取自 styles.css 里的 :root
+        interval.value = parseFloat(readVar("--blink-interval", "1")) || 1;
+
+        function syncInterval() {
+          root.style.setProperty("--blink-interval", interval.value + "s");
+          intervalVal.textContent = (+interval.value).toFixed(1) + "s";
+        }
+        interval.addEventListener("input", syncInterval);
+
+        // 右键不弹浏览器菜单（和真实灯一致）
+        window.addEventListener("contextmenu", function (e) {
+          e.preventDefault();
+        });
+
+        syncInterval();
+        apply("blocked"); // 打开即红灯闪，方便先看闪烁
+      })();
+    </script>
+  </body>
+</html>

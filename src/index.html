@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI Work Traffic Light</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <!--
+      常驻悬浮灯本体。Tauri 后端会把这个窗口做成透明、无边框、置顶，
+      并定位到任务栏左下。状态由后端通过 `state-changed` 事件推送。
+      status: working(绿) | idle(黄) | blocked(红) | none(隐藏)
+    -->
+    <div id="widget" class="widget is-none" role="status" aria-live="polite" title="拖动可移动；右键锁定位置" data-tauri-drag-region>
+      <span class="housing" aria-hidden="true">
+        <span class="lamp lamp-red"></span>
+        <span class="lamp lamp-yellow"></span>
+        <span class="lamp lamp-green"></span>
+      </span>
+      <span class="label" id="label"></span>
+    </div>
+
+    <!-- 右键灯弹出的菜单（仅未锁定时可右键到） -->
+    <!-- <div id="ctxmenu" class="ctxmenu" hidden>
+      <button type="button" id="ctx-lock">🔒 锁定位置</button>
+    </div> -->
+
+    <!-- 验证用控制面板：仅在浏览器(非 Tauri)下显示 -->
+    <!-- <div id="demo" class="demo" hidden>
+      <div class="demo-title">演示控制（仅浏览器可见）</div>
+      <div class="demo-row">
+        <button type="button" data-status="working">🟢 工作中</button>
+        <button type="button" data-status="idle">🟡 该你了</button>
+        <button type="button" data-status="blocked">🔴 等你</button>
+        <button type="button" data-status="none">⚫ 无会话</button>
+      </div>
+      <label class="demo-row">
+        会话标识（红灯时显示）：
+        <input id="demo-label" type="text" value="ai-work-traffic-light" />
+      </label>
+    </div> -->
+
+    <script src="main.js"></script>
+  </body>
+</html>

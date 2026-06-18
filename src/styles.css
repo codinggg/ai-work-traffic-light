@@ -1,0 +1,324 @@
+/* AI Work Traffic Light — 红绿灯样式
+   黑色外壳 + 三个灯(红/黄/绿)。没亮的灯浅色(淡)，亮起的灯深色(饱满)+发光。
+   状态: working(绿亮) / idle(黄亮) / blocked(红亮,脉冲) / neutral(三灯皆浅) / none(隐藏) */
+
+:root {
+  --lamp-size: 25px;
+  --label-bg: rgba(20, 22, 27, 0.82);
+  --label-fg: #e6edf3;
+  /* 提醒灯(红/黄)的闪烁周期 = 一次"亮 + 灭(回到灯的初始样式)"的总时长。
+     想闪快改小、慢改大；绿灯永不闪。 */
+  --blink-interval: 1s;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: transparent; /* Tauri 窗口透明，只露出黑色外壳 */
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* 容器填满整个(透明)窗口，整窗可拖；外壳+标签靠左 */
+.widget {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  height: 100%;
+  padding: 0 8px;
+  cursor: default;
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+/* 子元素不拦截鼠标，让按下事件落到带拖动属性的 .widget 上，整窗处处可拖 */
+.housing,
+.lamp,
+.label {
+  pointer-events: none;
+}
+
+/* 黑色外壳：横向容纳三个灯 */
+.housing {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 6px;
+  background: #15171c;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 9px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+/* 灯：默认用浅色(--off)，亮起时用深色(--on)+光晕 */
+.lamp {
+  position: relative;
+  overflow: hidden; /* 裁剪出顶部的月牙遮罩 */
+  width: var(--lamp-size);
+  height: var(--lamp-size);
+  border-radius: 50%;
+  flex: 0 0 auto;
+  
+  /* 🎯 优化：熄灭状态下的底色与基础玻璃高光 */
+  background-color: var(--off);
+  background-image: radial-gradient(
+    circle at 40% 46%,
+    rgba(255, 255, 255, 0.45),
+    rgba(255, 255, 255, 0) 50%
+  );
+  /* 内部四周自带一圈轻微内阴影，强化边缘凹陷感 */
+  box-shadow: inset 0 0 4px rgba(0, 0, 0, 0.6), inset 0 -1px 2px rgba(0, 0, 0, 0.45);
+  transition: background-image 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
+}
+
+/* 🎯 深度优化：物理学严谨的“不透光”反向月牙遮罩 */
+.lamp::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: -1px;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  
+  /* 优化1：大幅提高左上角黑色的不透明度（从0.75提升至0.95），确保强光无法穿透 */
+  background: linear-gradient(
+    135deg,
+    rgba(0, 0, 0, 0.95) 0%,
+    rgba(0, 0, 0, 0.6) 25%,
+    rgba(0, 0, 0, 0) 60%
+  );
+  
+  /* 优化2：压死内阴影，采用纯黑不透明（rgba 最后一项设为 1.0），使其成为死角 */
+  box-shadow: inset 2px 2px 3px #000000;
+  
+  /* 优化3：引入正片叠底混合模式，让遮罩的黑与底部的彩色进行色彩压制， */
+  /* 这样哪怕底下亮起高明度绿色或红色，在黑色遮罩下也只会变暗，绝不会泛起亮光 */
+  mix-blend-mode: multiply;
+  
+  /* 提升图层层级，确保绝对压在 background-color 的发光层上方 */
+  z-index: 2; 
+  transform: none; 
+}
+
+/* 🎯 调色盘微调：稍微降低了 --glow 的扩散不透明度，增强内部 --on 的中心亮度 */
+.lamp-red {
+  --on: #ff1403;
+  --off: #3b2e2ede;
+  --glow: rgba(255, 20, 3, 0.35);
+}
+.lamp-yellow {
+  --on: #ffb300;
+  --off: #403d31d8;
+  --glow: rgba(255, 179, 0, 0.3);
+}
+.lamp-green {
+  --on: #00ff2f;
+  --off: #313d34d6;
+  --glow: rgba(0, 255, 47, 0.35);
+}
+
+/* 🎯 核心修改：点亮状态下，光线由内向外渐变暗 */
+.widget.is-working .lamp-green,
+.widget.is-idle .lamp-yellow,
+.widget.is-error .lamp-yellow,
+.widget.is-blocked .lamp-red {
+  background-color: var(--off); /* 边缘保留暗色底色 */
+  /* 确保外发光正常扩散，但内部由于 before 的 mix-blend-mode 作用，左上角依然会被压暗 */
+  box-shadow: 0 0 7px 1px var(--glow), inset 0 -1px 2px rgba(0, 0, 0, 0.45);
+  
+/* 🎯 核心修改：去掉了纯白核心 #ffffff，直接从 var(--on) 本色开始向外渐变暗 */
+  background-image: 
+    radial-gradient(
+      circle at 40% 46%,
+      rgba(255, 255, 255, 0.35), /* 降低表面玻璃微弱反光，让色彩更纯粹 */
+      rgba(255, 255, 255, 0) 50%
+    ),
+    radial-gradient(
+      circle at 45% 50%,
+      var(--on) 0%,    /* 🎯 0% 处直接使用纯正的灯光颜色，不再有白色 */
+      var(--on) 50%,   /* 保持高饱和度色彩扩散到接近一半的区域 */
+      rgba(0, 0, 0, 0.4) 85%, /* 逼近边缘时，快速平滑地过渡到暗色阴影 */
+      transparent 100%
+    );
+
+  /* 保持内敛的边缘光线锁，不让强光溢出 */
+  box-shadow: 
+    0 0 3px 0px var(--glow), 
+    inset 0 -1px 2px rgba(0, 0, 0, 0.45);
+}
+
+/* 提醒闪烁：红灯/黄灯进入提醒态后闪烁吸引注意；当你切到工作窗口(VSCode/终端/Claude
+   等，后端检测到并给 widget 加 .is-ack)时停闪、转为常亮 —— 红/黄闪，绿(工作中)不闪。
+   (error 状态 = API 报错，复用黄灯闪烁。) 闪烁快慢由 :root 的 --blink-interval 控制。 */
+.widget.is-blocked:not(.is-ack) .lamp-red,
+.widget.is-idle:not(.is-ack) .lamp-yellow,
+.widget.is-error:not(.is-ack) .lamp-yellow {
+  animation: blink var(--blink-interval) linear infinite;
+}
+
+/* 真实红绿灯式的"亮一下暗一下"：前半周期点亮，后半周期回到灯的初始(未点亮)样式——
+   是变暗的本色灯，不是变透明/变黑。两半在 50% 处近乎瞬间切换，形成 50/50 方波闪烁。
+   注意：下面"亮"这半段镜像点亮态(.is-blocked .lamp-red 等)，"暗"这半段镜像 .lamp 初始态；
+        如果你调了那两处的渐变/阴影，记得同步改这里，才能让闪烁的两态和静态一致。 */
+@keyframes blink {
+  0%,
+  50% {
+    /* 亮：点亮态 */
+    background-color: var(--off);
+    background-image: radial-gradient(
+        circle at 40% 46%,
+        rgba(255, 255, 255, 0.35),
+        rgba(255, 255, 255, 0) 50%
+      ),
+      radial-gradient(
+        circle at 45% 50%,
+        var(--on) 0%,
+        var(--on) 50%,
+        rgba(0, 0, 0, 0.4) 85%,
+        transparent 100%
+      );
+    box-shadow: 0 0 3px 0px var(--glow), inset 0 -1px 2px rgba(0, 0, 0, 0.45);
+  }
+  50.01%,
+  100% {
+    /* 暗：灯的初始样式(未点亮的本色 --off + 玻璃高光 + 内阴影)，不是黑 */
+    background-color: var(--off);
+    background-image: radial-gradient(
+      circle at 40% 46%,
+      rgba(255, 255, 255, 0.45),
+      rgba(255, 255, 255, 0) 50%
+    );
+    box-shadow: inset 0 0 4px rgba(0, 0, 0, 0.6), inset 0 -1px 2px rgba(0, 0, 0, 0.45);
+  }
+}
+/* 系统开启"减少动态效果"时不闪，保留常亮的点亮态。 */
+@media (prefers-reduced-motion: reduce) {
+  .widget.is-blocked .lamp-red,
+  .widget.is-idle .lamp-yellow,
+  .widget.is-error .lamp-yellow {
+    animation: none;
+  }
+}
+
+/* ---- 启动开场动画：红→黄→绿依次亮一下后熄灭 ---- */
+/* 程序启动时前端给 widget 加 .is-boot，三个灯错峰各亮约 0.45s；
+   想调节奏：改下面的 duration(0.45s) 与各灯的 delay(0/0.3s/0.6s)。
+   主时长 ≈ 0.6 + 0.45 ≈ 1.05s，main.js 里用 setTimeout 1300ms 之后移除 .is-boot。 */
+.widget.is-boot .lamp-red {
+  /*            持续时间(亮多久)        延迟时间(何时开始)*/
+  /*                     👇              👇        */
+  animation: boot-flash 0.7s ease-in-out 0.5s 1 both;
+}
+.widget.is-boot .lamp-yellow {
+  animation: boot-flash 0.7s ease-in-out 1.2s 1 both;
+}
+.widget.is-boot .lamp-green {
+  animation: boot-flash 0.7s ease-in-out 1.9s 1 both;
+}
+@keyframes boot-flash {
+  0%,
+  100% {
+    /* 熄灭态：与 .lamp 默认底色/内阴影一致 */
+    background-color: var(--off);
+    box-shadow: inset 0 0 4px rgba(0, 0, 0, 0.6), inset 0 -1px 2px rgba(0, 0, 0, 0.45);
+  }
+  50% {
+    /* 亮一下：本灯的点亮色 + 光晕 */
+    background-color: var(--on);
+    box-shadow: 0 0 9px 2px var(--glow), inset 0 -1px 2px rgba(0, 0, 0, 0.45);
+  }
+}
+
+/* neutral(召唤但无会话): 三灯皆浅、外壳可见 —— 默认样式即是，无需额外规则 */
+
+/* 隐藏：无任何会话 */
+.widget.is-none {
+  opacity: 0;
+  transform: scale(0.85);
+  pointer-events: none;
+}
+
+/* 会话标识：红灯(带 label)时出现的小药丸 */
+.label {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--label-fg);
+  background: var(--label-bg);
+  padding: 1px 8px;
+  border-radius: 999px;
+  opacity: 0;
+  transform: translateX(-4px);
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+.widget.has-label .label {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+/* ---- 演示控制面板（仅 ?demo） ---- */
+.demo {
+  position: fixed;
+  left: 12px;
+  bottom: 12px;
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  background: rgba(20, 22, 27, 0.92);
+  color: var(--label-fg);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  font-size: 13px;
+}
+.demo-title {
+  font-weight: 600;
+  opacity: 0.8;
+}
+.demo-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.demo button {
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #21262d;
+  color: var(--label-fg);
+  padding: 5px 9px;
+  border-radius: 7px;
+  font-size: 13px;
+}
+.demo button:hover {
+  background: #30363d;
+}
+.demo input {
+  flex: 1;
+  background: #0d1117;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--label-fg);
+  border-radius: 6px;
+  padding: 4px 7px;
+}
+
+/* 浏览器演示(?demo)时给个深色衬底，好看清灯（Tauri 真实窗口透明，不受影响） */
+body.demo-mode {
+  background: #1b1f24;
+}
+body.demo-mode .widget {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  width: auto;
+  height: 32px;
+}
