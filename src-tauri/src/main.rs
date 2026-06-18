@@ -86,6 +86,30 @@ fn show_about(app: &AppHandle) {
         .show(|_| {});
 }
 
+/// Codex 的 notify 用 `<本程序> --codex-notify '<json>'` 调用我们：把作为最后一个参数
+/// 传入的事件 JSON 转发到本地状态端点(/event/CodexTurnComplete)，然后退出，不启动 GUI。
+/// 连不上(GUI 没在跑)就静默返回。用裸 TCP 发一条最简 HTTP POST，避免引入 HTTP 客户端依赖。
+fn codex_notify_relay(args: &[String]) {
+    use std::io::Write;
+    let body = args.last().cloned().unwrap_or_default();
+    let Ok(mut stream) = std::net::TcpStream::connect(("127.0.0.1", STATE_PORT)) else {
+        return;
+    };
+    let req = format!(
+        "POST /event/CodexTurnComplete HTTP/1.1\r\n\
+         Host: 127.0.0.1\r\n\
+         Content-Type: application/json\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n\
+         \r\n\
+         {}",
+        body.len(),
+        body
+    );
+    let _ = stream.write_all(req.as_bytes());
+    let _ = stream.flush();
+}
+
 /// 托盘"锁定位置"勾选项句柄（放入 managed state，供命令同步勾选态）。
 struct LockToggle(tauri::menu::CheckMenuItem<tauri::Wry>);
 
@@ -106,6 +130,14 @@ fn set_locked(
 }
 
 fn main() {
+    // Codex 的 notify 会以 `<本程序> --codex-notify '<json>'` 调用我们；命中就只转发
+    // 一次事件给本地端点然后退出，不启动 GUI（详见 codex_notify_relay）。
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--codex-notify") {
+        codex_notify_relay(&args);
+        return;
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
@@ -179,10 +211,21 @@ fn main() {
                 shared.locked.load(Ordering::Relaxed),
                 None::<&str>,
             )?;
+            // 「接入」子菜单：Claude hooks + Codex notify 的安装/卸载。
             let install =
-                MenuItem::with_id(app, "install_hooks", "安装 hooks", true, None::<&str>)?;
+                MenuItem::with_id(app, "install_hooks", "安装 Claude hooks", true, None::<&str>)?;
             let uninstall =
-                MenuItem::with_id(app, "uninstall_hooks", "卸载 hooks", true, None::<&str>)?;
+                MenuItem::with_id(app, "uninstall_hooks", "卸载 Claude hooks", true, None::<&str>)?;
+            let install_codex =
+                MenuItem::with_id(app, "install_codex", "安装 Codex 通知", true, None::<&str>)?;
+            let uninstall_codex =
+                MenuItem::with_id(app, "uninstall_codex", "卸载 Codex 通知", true, None::<&str>)?;
+            let access_menu = Submenu::with_items(
+                app,
+                "接入",
+                true,
+                &[&install, &uninstall, &install_codex, &uninstall_codex],
+            )?;
             let about = MenuItem::with_id(app, "about", "关于", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let sep1 = PredefinedMenuItem::separator(app)?;
@@ -196,8 +239,7 @@ fn main() {
                     &autostart_item,
                     &lock_item,
                     &sep1,
-                    &install,
-                    &uninstall,
+                    &access_menu,
                     &sep2,
                     &about,
                     &sep3,
@@ -291,6 +333,10 @@ fn main() {
                         notify_result(app, installer::install());
                     } else if id == "uninstall_hooks" {
                         notify_result(app, installer::uninstall());
+                    } else if id == "install_codex" {
+                        notify_result(app, installer::install_codex());
+                    } else if id == "uninstall_codex" {
+                        notify_result(app, installer::uninstall_codex());
                     } else if id == "quit" {
                         app.exit(0);
                     } else if id == "about" {

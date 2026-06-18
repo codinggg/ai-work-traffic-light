@@ -50,6 +50,8 @@ struct Session {
     transcript: Option<String>,
     /// transcript 已读到的字节偏移；None = 还没初始化(首次定位到文件末尾，只看新增)。
     tpos: Option<u64>,
+    /// 最近一次更新时间。用于 Codex 会话(无 SessionEnd)的自动过期。
+    updated: std::time::Instant,
 }
 
 impl Session {
@@ -100,13 +102,24 @@ impl Store {
             api_error: false,
             transcript: None,
             tpos: None,
+            updated: std::time::Instant::now(),
         });
         entry.status = status;
+        entry.updated = std::time::Instant::now();
         // 收到任意正常事件 = Claude 已越过之前的 API 错误，清掉错误标记。
         entry.api_error = false;
         if let Some(l) = label {
             entry.label = l;
         }
+    }
+
+    /// 移除 id 以 `prefix` 开头、且超过 `max_age` 未更新的会话。返回是否有移除。
+    /// 用于 Codex：它没有 SessionEnd 事件，靠这个让黄灯过一会儿自动消隐，不永久卡住。
+    pub fn expire(&mut self, prefix: &str, max_age: std::time::Duration) -> bool {
+        let before = self.sessions.len();
+        self.sessions
+            .retain(|id, s| !(id.starts_with(prefix) && s.updated.elapsed() >= max_age));
+        before != self.sessions.len()
     }
 
     /// 记录会话的 transcript 路径(来自 hook 的 transcript_path)。首次设置时把读取
@@ -282,6 +295,18 @@ mod tests {
         assert_eq!(label_from_cwd("e:/mycode/work/foo"), "foo");
         assert_eq!(label_from_cwd("e:\\mycode\\bar\\"), "bar");
         assert_eq!(label_from_cwd("/single"), "single");
+    }
+
+    #[test]
+    fn expire_removes_only_matching_prefix_after_age() {
+        let mut s = Store::default();
+        s.apply("Stop", "codex:e:/x/foo", Some("e:/x/foo")); // Codex 会话(黄)
+        s.apply("UserPromptSubmit", "claude-a", Some("/x/bar")); // Claude 会话
+        // max_age=0 -> 立即过期：只清 codex: 前缀的，Claude 的保留。
+        assert!(s.expire("codex:", std::time::Duration::from_secs(0)));
+        assert_eq!(s.aggregate().status, "working"); // Claude 会话还在
+        // 再次过期无 codex 会话可清 -> 无变化。
+        assert!(!s.expire("codex:", std::time::Duration::from_secs(0)));
     }
 
     #[test]

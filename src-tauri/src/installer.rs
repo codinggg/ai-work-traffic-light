@@ -143,3 +143,84 @@ pub fn uninstall() -> Result<String, String> {
         "已移除 {removed} 个 hook 条目。请重启 Claude Code 生效。"
     ))
 }
+
+// ===== Codex 接入 =====
+//
+// Codex CLI 的外部钩子是 ~/.codex/config.toml 里的顶层 `notify`：它会用
+// `notify` 指定的程序 + 把事件 JSON 作为最后一个参数来调用。我们让它直接调本程序自身：
+//   notify = ["<本程序绝对路径>", "--codex-notify"]
+// 程序检测到该 flag 就把 JSON 转发到本地端点(见 main.rs codex_notify_relay)，不启动 GUI。
+// 数组形式由 Codex 直接 exec（不过 shell），路径含空格也安全。
+// 目前 Codex 只发 agent-turn-complete 事件，对应黄灯「该你了」。
+
+/// 识别"这条 notify 是我们装的"的标记参数。
+const CODEX_FLAG: &str = "--codex-notify";
+
+fn codex_config_path() -> Result<PathBuf, String> {
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .ok_or("找不到用户主目录 (USERPROFILE/HOME)")?;
+    Ok(PathBuf::from(home).join(".codex").join("config.toml"))
+}
+
+/// notify 数组是否已是我们装的（含 CODEX_FLAG）。
+fn codex_notify_is_ours(doc: &toml_edit::DocumentMut) -> bool {
+    doc.get("notify")
+        .and_then(|i| i.as_array())
+        .is_some_and(|a| a.iter().any(|v| v.as_str() == Some(CODEX_FLAG)))
+}
+
+/// 把 Codex 的 notify 指向本程序。保留 config.toml 里用户原有的其它配置/注释。
+pub fn install_codex() -> Result<String, String> {
+    let exe = std::env::current_exe()
+        .map_err(|e| format!("取程序路径失败: {e}"))?
+        .to_string_lossy()
+        .to_string();
+
+    let path = codex_config_path()?;
+    std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+
+    let mut doc: toml_edit::DocumentMut = if path.exists() {
+        let txt = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        std::fs::write(path.with_extension("toml.bak"), &txt).ok(); // 备份
+        txt.parse()
+            .map_err(|e| format!("config.toml 解析失败: {e}"))?
+    } else {
+        toml_edit::DocumentMut::new()
+    };
+
+    if codex_notify_is_ours(&doc) {
+        return Ok(format!("{} 已配置过，无需重复。", path.display()));
+    }
+
+    let mut arr = toml_edit::Array::new();
+    arr.push(exe.as_str());
+    arr.push(CODEX_FLAG);
+    doc["notify"] = toml_edit::value(arr);
+
+    std::fs::write(&path, doc.to_string()).map_err(|e| e.to_string())?;
+    Ok(format!(
+        "已写入 {}\nnotify 已指向本程序。请重启 Codex 生效。",
+        path.display()
+    ))
+}
+
+/// 移除我们装的 Codex notify（仅当它是我们的；用户自己的 notify 不动）。
+pub fn uninstall_codex() -> Result<String, String> {
+    let path = codex_config_path()?;
+    if !path.exists() {
+        return Ok("config.toml 不存在，无需卸载。".into());
+    }
+    let txt = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let mut doc: toml_edit::DocumentMut = txt
+        .parse()
+        .map_err(|e| format!("config.toml 解析失败: {e}"))?;
+
+    if !codex_notify_is_ours(&doc) {
+        return Ok("config.toml 里的 notify 不是本程序装的，未改动。".into());
+    }
+    std::fs::write(path.with_extension("toml.bak"), &txt).ok(); // 备份
+    doc.remove("notify");
+    std::fs::write(&path, doc.to_string()).map_err(|e| e.to_string())?;
+    Ok("已移除 Codex notify。请重启 Codex 生效。".into())
+}
