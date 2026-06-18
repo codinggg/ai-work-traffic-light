@@ -183,8 +183,8 @@ fn main() {
                 MenuItem::with_id(app, "install_hooks", "安装 hooks", true, None::<&str>)?;
             let uninstall =
                 MenuItem::with_id(app, "uninstall_hooks", "卸载 hooks", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let about = MenuItem::with_id(app, "about", "关于", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let sep1 = PredefinedMenuItem::separator(app)?;
             let sep2 = PredefinedMenuItem::separator(app)?;
             let sep3 = PredefinedMenuItem::separator(app)?;
@@ -199,8 +199,8 @@ fn main() {
                     &uninstall,
                     &sep2,
                     &quit,
-                    &sep3,
                     &about,
+                    &sep3,
                 ],
             )?;
 
