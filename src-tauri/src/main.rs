@@ -188,6 +188,7 @@ fn main() {
             let sep1 = PredefinedMenuItem::separator(app)?;
             let sep2 = PredefinedMenuItem::separator(app)?;
             let sep3 = PredefinedMenuItem::separator(app)?;
+            let sep4 = PredefinedMenuItem::separator(app)?;
             let menu = Menu::with_items(
                 app,
                 &[
@@ -198,9 +199,10 @@ fn main() {
                     &install,
                     &uninstall,
                     &sep2,
-                    &quit,
                     &about,
                     &sep3,
+                    &quit,
+                    &sep4,
                 ],
             )?;
 
