@@ -367,6 +367,13 @@ fn main() {
                     let at_work = taskbar::foreground_is_work_window();
                     if last_at_work != Some(at_work) {
                         last_at_work = Some(at_work);
+                        // 开发模式打印：看清前台进程名 + 是否判定为工作窗口（排查灯闪/常亮）。
+                        #[cfg(debug_assertions)]
+                        eprintln!(
+                            "[traffic-light] 焦点变化: 前台进程={:?} 工作窗口={}",
+                            taskbar::foreground_process_name(),
+                            at_work
+                        );
                         let _ = app_handle.emit("focus-changed", at_work);
                     }
 

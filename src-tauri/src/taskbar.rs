@@ -84,6 +84,7 @@ const WORK_PROCESSES: &[&str] = &[
     "cursor.exe",          // Cursor
     "windsurf.exe",        // Windsurf
     "claude.exe",          // Claude 桌面端
+    "codex.exe",           // Codex 独立窗口
     "windowsterminal.exe", // Windows Terminal
     "wt.exe",
     "powershell.exe",
@@ -92,22 +93,27 @@ const WORK_PROCESSES: &[&str] = &[
 ];
 
 /// 当前前台窗口是否属于「工作窗口」(编辑器/终端)。
-/// 取前台窗口的进程名和 WORK_PROCESSES 比对。任何一步失败都按 false。
 pub fn foreground_is_work_window() -> bool {
+    foreground_process_name()
+        .map(|n| WORK_PROCESSES.contains(&n.to_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+/// 取当前前台窗口的进程名（只含文件名，如 "Code.exe"）。失败返回 None。
+/// 既用于判定工作窗口，也用于调试输出（看清到底把哪个窗口认成了什么）。
+pub fn foreground_process_name() -> Option<String> {
     use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
     unsafe {
         let hwnd = GetForegroundWindow();
         if hwnd.0.is_null() {
-            return false;
+            return None;
         }
         let mut pid: u32 = 0;
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
         if pid == 0 {
-            return false;
+            return None;
         }
         process_name(pid)
-            .map(|n| WORK_PROCESSES.contains(&n.to_lowercase().as_str()))
-            .unwrap_or(false)
     }
 }
 
