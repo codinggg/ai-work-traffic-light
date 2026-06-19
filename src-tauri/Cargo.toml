@@ -30,6 +30,11 @@ windows = { version = "0.58", features = [
 # 关掉 WebView2 默认右键菜单(返回/刷新/打印…)。版本对齐 tauri 2.11 自带的 webview2-com。
 webview2-com = "0.38"
 
+# macOS/Linux：取前台窗口（进程名/应用名）做“聚焦常亮”。内部封装 AppKit / X11；
+# Wayland 取不到时返回 Err，我们据此降级。Windows 不用它（用 Win32 Toolhelp）。
+[target.'cfg(not(windows))'.dependencies]
+active-win-pos-rs = "0.8"
+
 [profile.release]
 opt-level = "s"
 lto = true

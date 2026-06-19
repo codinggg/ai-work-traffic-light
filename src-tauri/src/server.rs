@@ -126,19 +126,15 @@ fn apply_effective(app: &AppHandle, shared: &Shared, real: Aggregate) {
     let _ = app.emit("state-changed", &effective);
     // 同步推一次"是否已查看(常亮)"：只有切到当前催你来源对应的窗口才算已查看。
     // 这里立刻算一次消除状态变化时的闪烁延迟；窗口切换则由 main.rs 定时器负责。
-    #[cfg(windows)]
-    {
-        let ack = crate::taskbar::foreground_matches_source(&effective.source);
-        let _ = app.emit("focus-changed", ack);
-    }
+    let ack = crate::platform::foreground_matches_source(&effective.source);
+    let _ = app.emit("focus-changed", ack);
     if let Some(win) = app.get_webview_window("light") {
         if effective.status == "none" {
             let _ = win.hide();
         } else {
-            // 仅首次显示时自动定位到任务栏；之后保留用户拖动后的位置。
-            #[cfg(windows)]
+            // 仅首次显示时自动定位；之后保留用户拖动后的位置。
             if !shared.positioned.swap(true, Ordering::Relaxed) {
-                crate::taskbar::position_over_taskbar(&win);
+                crate::platform::place_window(&win);
             }
             let _ = win.show();
         }
@@ -182,7 +178,57 @@ fn play_sound(urgent: bool, custom: Option<&str>) {
         let _ = MessageBeep(if urgent { MB_ICONWARNING } else { MB_ICONASTERISK });
     }
 }
-#[cfg(not(windows))]
+
+/// macOS：自定义音用 afplay 放文件；默认放系统音（红灯更显眼）。
+#[cfg(target_os = "macos")]
+fn play_sound(urgent: bool, custom: Option<&str>) {
+    use std::process::Command;
+    if let Some(value) = custom {
+        if let Some(path) = crate::config::resolve_sound(value) {
+            let _ = Command::new("afplay").arg(path).spawn();
+            return;
+        }
+    }
+    let sys = if urgent {
+        "/System/Library/Sounds/Sosumi.aiff"
+    } else {
+        "/System/Library/Sounds/Funk.aiff"
+    };
+    let _ = Command::new("afplay").arg(sys).spawn();
+}
+
+/// Linux：自定义 .wav 依次试常见播放器；默认放 freedesktop 主题音，兜底响终端铃。
+#[cfg(target_os = "linux")]
+fn play_sound(urgent: bool, custom: Option<&str>) {
+    use std::process::Command;
+    if let Some(value) = custom {
+        if let Some(path) = crate::config::resolve_sound(value) {
+            let p = path.to_string_lossy().to_string();
+            for (cmd, args) in [
+                ("paplay", vec![p.as_str()]),
+                ("aplay", vec![p.as_str()]),
+                ("ffplay", vec!["-nodisp", "-autoexit", "-loglevel", "quiet", p.as_str()]),
+            ] {
+                if Command::new(cmd).args(&args).spawn().is_ok() {
+                    return;
+                }
+            }
+            return;
+        }
+    }
+    let event = if urgent { "dialog-warning" } else { "message" };
+    if Command::new("canberra-gtk-play")
+        .args(["-i", event])
+        .spawn()
+        .is_ok()
+    {
+        return;
+    }
+    eprint!("\x07"); // BEL 兜底
+}
+
+/// 其它非 Windows 平台：暂不发声。
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 fn play_sound(_urgent: bool, _custom: Option<&str>) {}
 
 /// 试听一个自定义提示音(托盘里选好后放一次让用户确认)；传 config 值(文件名或路径)。
