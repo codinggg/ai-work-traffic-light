@@ -21,24 +21,29 @@ const CODEX_IDLE_TIMEOUT_SECS: u64 = 600;
 pub fn start(app: AppHandle, shared: Arc<Shared>, port: u16) {
     // transcript 轮询线程：hooks 不会在 API 报错(如 429)时触发，但错误会写进会话
     // transcript。每 ~1.5s 读各活跃会话 transcript 的新增内容，发现 API 错误就把该
-    // 会话标记为 error(黄灯)并刷新显示。顺带把过期的 Codex 会话清掉(自动消隐)。
+    // 会话标记为 error(黄灯)；同时监视 Codex 会话日志(working/idle)，并清理过期的
+    // Codex 会话(自动消隐)。任一有变化就刷新显示。
     {
         let app = app.clone();
         let shared = shared.clone();
-        std::thread::spawn(move || loop {
-            std::thread::sleep(std::time::Duration::from_millis(1500));
-            let changed = {
-                let mut store = shared.store.lock().unwrap();
-                let err = store.scan_api_errors();
-                let expired = store.expire(
-                    "codex:",
-                    std::time::Duration::from_secs(CODEX_IDLE_TIMEOUT_SECS),
-                );
-                err || expired
-            };
-            if changed {
-                let agg = shared.store.lock().unwrap().aggregate();
-                apply_effective(&app, &shared, agg);
+        std::thread::spawn(move || {
+            let mut codex = crate::codex::CodexWatcher::new();
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(1500));
+                let changed = {
+                    let mut store = shared.store.lock().unwrap();
+                    let err = store.scan_api_errors();
+                    let cdx = codex.poll(&mut store);
+                    let expired = store.expire(
+                        "codex:",
+                        std::time::Duration::from_secs(CODEX_IDLE_TIMEOUT_SECS),
+                    );
+                    err || cdx || expired
+                };
+                if changed {
+                    let agg = shared.store.lock().unwrap().aggregate();
+                    apply_effective(&app, &shared, agg);
+                }
             }
         });
     }
@@ -64,15 +69,9 @@ pub fn start(app: AppHandle, shared: Arc<Shared>, port: u16) {
 
             let agg = {
                 let mut store = shared.store.lock().unwrap();
-                if event == "CodexTurnComplete" {
-                    // Codex 没有 session_id，用 cwd 合成稳定 id；一轮跑完 = idle(黄)「该你了」。
-                    let id = format!("codex:{}", cwd.as_deref().unwrap_or("default"));
-                    store.apply("Stop", &id, cwd.as_deref());
-                } else {
-                    store.apply(&event, &session_id, cwd.as_deref());
-                    if let Some(t) = &transcript {
-                        store.set_transcript(&session_id, t);
-                    }
+                store.apply(&event, &session_id, cwd.as_deref());
+                if let Some(t) = &transcript {
+                    store.set_transcript(&session_id, t);
                 }
                 store.aggregate()
             };

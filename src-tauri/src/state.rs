@@ -122,6 +122,14 @@ impl Store {
         before != self.sessions.len()
     }
 
+    /// 该会话存在则刷新其活跃时间。Codex 监视器在会话有任何新增日志行时调用，
+    /// 避免一个长任务(久未 task_complete)被 expire 误清。
+    pub fn touch(&mut self, id: &str) {
+        if let Some(s) = self.sessions.get_mut(id) {
+            s.updated = std::time::Instant::now();
+        }
+    }
+
     /// 记录会话的 transcript 路径(来自 hook 的 transcript_path)。首次设置时把读取
     /// 偏移定位到文件当前末尾，只盯之后的新增内容(避免把历史里的旧错误当成新错误)。
     pub fn set_transcript(&mut self, id: &str, path: &str) {
