@@ -92,16 +92,9 @@ const WORK_PROCESSES: &[&str] = &[
 ];
 
 /// 当前前台窗口是否属于「工作窗口」(编辑器/终端)。
-/// 取前台窗口的进程可执行文件名，和 WORK_PROCESSES 比对。任何一步失败都按 false。
+/// 取前台窗口的进程名和 WORK_PROCESSES 比对。任何一步失败都按 false。
 pub fn foreground_is_work_window() -> bool {
-    use windows::core::PWSTR;
-    use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-        PROCESS_QUERY_LIMITED_INFORMATION,
-    };
     use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
-
     unsafe {
         let hwnd = GetForegroundWindow();
         if hwnd.0.is_null() {
@@ -112,27 +105,46 @@ pub fn foreground_is_work_window() -> bool {
         if pid == 0 {
             return false;
         }
-        let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
-            return false;
+        process_name(pid)
+            .map(|n| WORK_PROCESSES.contains(&n.to_lowercase().as_str()))
+            .unwrap_or(false)
+    }
+}
+
+/// 用进程快照按 pid 取可执行文件名（只含文件名）。
+/// 为何不用 OpenProcess+QueryFullProcessImageNameW：普通权限进程打不开**提权进程**
+/// （如以管理员运行的 VS Code/Codex），OpenProcess 会失败而误判成"非工作窗口"。
+/// Toolhelp 快照能列出所有进程的名字（任务管理器同理），不受提权影响。
+fn process_name(pid: u32) -> Option<String> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
         };
-
-        // 取进程可执行文件全路径，再截最后一段文件名做比对。
-        let mut buf = [0u16; 1024];
-        let mut len = buf.len() as u32;
-        let ok =
-            QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len)
-                .is_ok();
-        let _ = CloseHandle(handle);
-        if !ok {
-            return false;
+        let mut found = None;
+        if Process32FirstW(snap, &mut entry).is_ok() {
+            loop {
+                if entry.th32ProcessID == pid {
+                    let end = entry
+                        .szExeFile
+                        .iter()
+                        .position(|&c| c == 0)
+                        .unwrap_or(entry.szExeFile.len());
+                    found = Some(String::from_utf16_lossy(&entry.szExeFile[..end]));
+                    break;
+                }
+                if Process32NextW(snap, &mut entry).is_err() {
+                    break;
+                }
+            }
         }
-
-        let path = String::from_utf16_lossy(&buf[..len as usize]);
-        let name = path
-            .rsplit(['\\', '/'])
-            .next()
-            .unwrap_or("")
-            .to_lowercase();
-        WORK_PROCESSES.contains(&name.as_str())
+        let _ = CloseHandle(snap);
+        found
     }
 }
