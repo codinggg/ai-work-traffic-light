@@ -76,6 +76,9 @@ pub struct Aggregate {
     pub status: String,
     #[serde(rename = "sessionLabel")]
     pub session_label: String,
+    /// 当前在"催你"的那个会话来自哪个工具："claude" / "codex" / ""(无)。
+    /// 用于"精确到窗口"的停闪判断：只有切到该来源对应的窗口才算已查看。
+    pub source: String,
 }
 
 impl Store {
@@ -196,30 +199,34 @@ impl Store {
 
     /// 计算当前应显示的聚合状态。
     pub fn aggregate(&self) -> Aggregate {
+        // 取紧急度最高的那个会话(连同 id，用于判定来源 claude/codex)。
         let top = self
             .sessions
-            .values()
-            .map(|s| s.effective())
-            .max_by_key(|s| s.urgency());
+            .iter()
+            .max_by_key(|(_, s)| s.effective().urgency());
         match top {
             None => Aggregate {
                 status: "none".into(),
                 session_label: String::new(),
+                source: String::new(),
             },
-            Some(st) => {
-                // 仅红灯附带"是哪个会话"(挑一个 blocked 会话的标识)。
+            Some((id, s)) => {
+                let st = s.effective();
+                let source = if id.starts_with("codex:") {
+                    "codex"
+                } else {
+                    "claude"
+                };
+                // 仅红灯附带"是哪个会话"。
                 let label = if st == Status::Blocked {
-                    self.sessions
-                        .values()
-                        .find(|s| s.effective() == Status::Blocked)
-                        .map(|s| s.label.clone())
-                        .unwrap_or_default()
+                    s.label.clone()
                 } else {
                     String::new()
                 };
                 Aggregate {
                     status: st.as_str().into(),
                     session_label: label,
+                    source: source.into(),
                 }
             }
         }
@@ -268,6 +275,16 @@ mod tests {
         let agg = s.aggregate();
         assert_eq!(agg.status, "blocked");
         assert_eq!(agg.session_label, "bar");
+        assert_eq!(agg.source, "claude");
+    }
+
+    #[test]
+    fn codex_session_reports_codex_source() {
+        let mut s = Store::default();
+        s.apply("Stop", "codex:rollout-abc", Some("e:/x/foo"));
+        let agg = s.aggregate();
+        assert_eq!(agg.status, "idle");
+        assert_eq!(agg.source, "codex");
     }
 
     #[test]

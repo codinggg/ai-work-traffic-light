@@ -75,16 +75,13 @@ fn taskbar_rect() -> Option<RECT> {
     }
 }
 
-/// 被视为「工作窗口」的前台进程名（小写，带 .exe）。
-/// 用途：用户切到这些窗口时，提醒灯停止闪烁、转为常亮（说明人已经在看了）。
-/// 想加别的编辑器/终端，往这里加进程名即可。
-const WORK_PROCESSES: &[&str] = &[
+/// Claude 的「工作窗口」进程名（小写）：编辑器/终端。切到这些里说明你在看 Claude。
+const EDITOR_PROCESSES: &[&str] = &[
     "code.exe",            // VS Code
     "code - insiders.exe", // VS Code Insiders
     "cursor.exe",          // Cursor
     "windsurf.exe",        // Windsurf
     "claude.exe",          // Claude 桌面端
-    "codex.exe",           // Codex 独立窗口
     "windowsterminal.exe", // Windows Terminal
     "wt.exe",
     "powershell.exe",
@@ -92,11 +89,23 @@ const WORK_PROCESSES: &[&str] = &[
     "cmd.exe",
 ];
 
-/// 当前前台窗口是否属于「工作窗口」(编辑器/终端)。
-pub fn foreground_is_work_window() -> bool {
-    foreground_process_name()
-        .map(|n| WORK_PROCESSES.contains(&n.to_lowercase().as_str()))
-        .unwrap_or(false)
+/// Codex 的「工作窗口」进程名（小写）：Codex 独立窗口。
+/// 若你的 Codex 跑在 VS Code 扩展里(窗口是 code.exe)，把 "code.exe" 也加进来即可。
+const CODEX_PROCESSES: &[&str] = &["codex.exe"];
+
+/// 前台窗口是否是给定来源("claude"/"codex")对应的工作窗口。
+/// 用于"精确到窗口"的停闪：哪个来源在催你，就得切到它的窗口才算已查看(常亮)。
+pub fn foreground_matches_source(source: &str) -> bool {
+    let Some(name) = foreground_process_name() else {
+        return false;
+    };
+    let name = name.to_lowercase();
+    let set: &[&str] = match source {
+        "codex" => CODEX_PROCESSES,
+        "claude" => EDITOR_PROCESSES,
+        _ => return false,
+    };
+    set.contains(&name.as_str())
 }
 
 /// 取当前前台窗口的进程名（只含文件名，如 "Code.exe"）。失败返回 None。

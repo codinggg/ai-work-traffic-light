@@ -354,7 +354,7 @@ fn main() {
             {
                 let app_handle = app.handle().clone();
                 let mut saved_pos = *shared_timer.last_pos.lock().unwrap();
-                let mut last_at_work: Option<bool> = None; // None = 还没通知过前端
+                let mut last_ack: Option<bool> = None; // None = 还没通知过前端
                 std::thread::spawn(move || loop {
                     std::thread::sleep(std::time::Duration::from_millis(800));
 
@@ -364,17 +364,21 @@ fn main() {
                         }
                     }
 
-                    let at_work = taskbar::foreground_is_work_window();
-                    if last_at_work != Some(at_work) {
-                        last_at_work = Some(at_work);
-                        // 开发模式打印：看清前台进程名 + 是否判定为工作窗口（排查灯闪/常亮）。
+                    // "精确到窗口"的停闪：取当前在催你的来源(claude/codex)，
+                    // 只有前台是该来源对应的窗口才算已查看(常亮 is-ack)，否则继续闪。
+                    let source = shared_timer.store.lock().unwrap().aggregate().source;
+                    let ack = taskbar::foreground_matches_source(&source);
+                    if last_ack != Some(ack) {
+                        last_ack = Some(ack);
+                        // 开发模式打印：看清前台进程名 + 来源 + 是否已查看（排查灯闪/常亮）。
                         #[cfg(debug_assertions)]
                         eprintln!(
-                            "[traffic-light] 焦点变化: 前台进程={:?} 工作窗口={}",
+                            "[traffic-light] 焦点变化: 前台进程={:?} 来源={:?} 已查看={}",
                             taskbar::foreground_process_name(),
-                            at_work
+                            source,
+                            ack
                         );
-                        let _ = app_handle.emit("focus-changed", at_work);
+                        let _ = app_handle.emit("focus-changed", ack);
                     }
 
                     let cur = *shared_timer.last_pos.lock().unwrap();

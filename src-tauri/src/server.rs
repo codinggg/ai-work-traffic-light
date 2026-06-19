@@ -117,12 +117,20 @@ fn apply_effective(app: &AppHandle, shared: &Shared, real: Aggregate) {
         Aggregate {
             status: "neutral".to_string(),
             session_label: String::new(),
+            source: String::new(),
         }
     } else {
         real
     };
 
     let _ = app.emit("state-changed", &effective);
+    // 同步推一次"是否已查看(常亮)"：只有切到当前催你来源对应的窗口才算已查看。
+    // 这里立刻算一次消除状态变化时的闪烁延迟；窗口切换则由 main.rs 定时器负责。
+    #[cfg(windows)]
+    {
+        let ack = crate::taskbar::foreground_matches_source(&effective.source);
+        let _ = app.emit("focus-changed", ack);
+    }
     if let Some(win) = app.get_webview_window("light") {
         if effective.status == "none" {
             let _ = win.hide();
