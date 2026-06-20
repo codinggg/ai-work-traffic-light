@@ -4,11 +4,12 @@
 // 最紧急的那个(blocked > idle > working)，无会话则隐藏。红灯时附带需要
 // 处理的那个会话的标识(取自 cwd 的项目目录名)。
 //
-// 事件→状态映射(KTD1，待 U1 spike 实测校准)：
-//   UserPromptSubmit / PreToolUse / PostToolUse -> working(绿)
-//   Notification                                -> blocked(红)
-//   Stop / SubagentStop                         -> idle(黄)
-//   SessionEnd                                  -> 移除该会话
+// 事件→状态映射：
+//   UserPromptSubmit / PreToolUse / PostToolUse / PreCompact -> working(绿，工作中)
+//   Notification / Stop / SubagentStop                       -> idle(黄，该你了/闪烁提醒)
+//   SessionEnd                                               -> 移除该会话
+// 注：Notification(请求权限/确认)原本映射到 blocked(红)，按需求改为黄灯提醒；
+//     /compact 压缩上下文期间走 PreCompact -> 绿(工作中)。blocked(红)暂无触发场景，保留备用。
 
 use std::collections::HashMap;
 
@@ -16,6 +17,9 @@ use std::collections::HashMap;
 enum Status {
     Working,
     Idle,
+    /// 红灯(等你确认)。目前无触发场景：Notification 已按需求改为黄灯(idle)。
+    /// 保留枚举与下面的紧急度/标签逻辑，便于将来给某种"硬阻塞"重新启用红灯。
+    #[allow(dead_code)]
     Blocked,
     /// API 报错(如 429 限流/服务不可用)。hooks 不报这个，靠扫 transcript 发现。
     ApiError,
@@ -85,9 +89,10 @@ impl Store {
     /// 应用一个 hook 事件，更新对应会话的状态。
     pub fn apply(&mut self, event: &str, session_id: &str, cwd: Option<&str>) {
         match event {
-            "Notification" => self.set(session_id, Status::Blocked, cwd),
-            "Stop" | "SubagentStop" => self.set(session_id, Status::Idle, cwd),
-            "UserPromptSubmit" | "PreToolUse" | "PostToolUse" => {
+            // 请求权限/确认(Notification) 与 完成这轮(Stop) 都算"该你了" -> 黄灯闪。
+            "Notification" | "Stop" | "SubagentStop" => self.set(session_id, Status::Idle, cwd),
+            // /compact 期间(PreCompact，手动或自动触发)Claude 在压缩上下文 = 工作中 -> 绿。
+            "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PreCompact" => {
                 self.set(session_id, Status::Working, cwd)
             }
             "SessionEnd" => {
@@ -268,13 +273,15 @@ mod tests {
     }
 
     #[test]
-    fn blocked_wins_and_carries_label() {
+    fn notification_is_idle_and_beats_working() {
         let mut s = Store::default();
         s.apply("UserPromptSubmit", "a", Some("e:/proj/foo"));
         s.apply("Notification", "b", Some("e:/work/bar"));
         let agg = s.aggregate();
-        assert_eq!(agg.status, "blocked");
-        assert_eq!(agg.session_label, "bar");
+        // Notification 现在=黄灯(该你了)，紧急度高于 working，故胜出。
+        assert_eq!(agg.status, "idle");
+        // 黄灯不带会话标签(标签是红灯特性，红灯暂停用)。
+        assert_eq!(agg.session_label, "");
         assert_eq!(agg.source, "claude");
     }
 
@@ -298,12 +305,22 @@ mod tests {
     }
 
     #[test]
-    fn recovery_blocked_to_working() {
+    fn notification_then_activity_back_to_working() {
         let mut s = Store::default();
         s.apply("Notification", "a", Some("/x/foo"));
-        assert_eq!(s.aggregate().status, "blocked");
-        // 授权放行后工具继续 -> PostToolUse 让它回到 working
+        assert_eq!(s.aggregate().status, "idle"); // 该你了(黄)
+        // 授权放行/继续干活 -> PreToolUse/PostToolUse 让它回到 working(绿)
         s.apply("PostToolUse", "a", Some("/x/foo"));
+        assert_eq!(s.aggregate().status, "working");
+    }
+
+    #[test]
+    fn precompact_is_working() {
+        let mut s = Store::default();
+        s.apply("Stop", "a", Some("/x/foo"));
+        assert_eq!(s.aggregate().status, "idle"); // 完成 -> 黄
+        // /compact 开始压缩上下文(PreCompact) -> 绿(工作中)，不再停在黄。
+        s.apply("PreCompact", "a", Some("/x/foo"));
         assert_eq!(s.aggregate().status, "working");
     }
 

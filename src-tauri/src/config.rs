@@ -51,6 +51,13 @@ pub fn audio_dir() -> Option<PathBuf> {
     Some(exe_dir()?.join("audio"))
 }
 
+/// 诊断用：exe 同目录的 events.log。记录 app 收到的每个 Claude hook 事件，
+/// 用来排查"某操作灯色不对"——看清到底触发了哪些事件、顺序与间隔。
+/// 这是临时诊断功能，问题定位后可移除。
+pub fn debug_log_path() -> Option<PathBuf> {
+    Some(exe_dir()?.join("events.log"))
+}
+
 /// 启动时确保 audio/ 文件夹存在（不存在就建）。
 pub fn ensure_audio_dir() {
     if let Some(d) = audio_dir() {

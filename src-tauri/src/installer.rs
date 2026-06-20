@@ -22,6 +22,8 @@ const EVENTS: &[(&str, bool)] = &[
     ("PostToolUse", true),
     ("Notification", false),
     ("Stop", false),
+    // PreCompact: /compact(手动或自动)压缩上下文时触发 -> 灯亮绿(工作中)。
+    ("PreCompact", false),
     ("SessionEnd", false),
 ];
 

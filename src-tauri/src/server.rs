@@ -76,6 +76,9 @@ pub fn start(app: AppHandle, shared: Arc<Shared>, port: u16) {
                 store.aggregate()
             };
 
+            // 诊断：把收到的事件与结果状态追加到 events.log（排查灯色问题；问题定位后可移除）。
+            log_event(&event, &session_id, &agg.status);
+
             // 检测状态变化：进入红灯弹通知；任意状态切换(若开启)播放声音。
             let (changed, entered_blocked) = {
                 let mut last = shared.last_status.lock().unwrap();
@@ -234,6 +237,34 @@ fn play_sound(_urgent: bool, _custom: Option<&str>) {}
 /// 试听一个自定义提示音(托盘里选好后放一次让用户确认)；传 config 值(文件名或路径)。
 pub fn preview_sound(value: &str) {
     play_sound(false, Some(value));
+}
+
+/// 诊断：把收到的 hook 事件追加到 exe 同目录的 events.log，带毫秒时间戳与结果状态。
+/// 用于排查"某操作灯色不对"——能看清到底触发了哪些事件、顺序与间隔（例如权限弹窗
+/// 出现时是否真的有 Notification 事件）。超过 256KB 自动清空，避免无限增长。
+/// 这是临时诊断功能，问题定位后可移除。
+fn log_event(event: &str, session_id: &str, status: &str) {
+    use std::io::Write;
+    let Some(path) = crate::config::debug_log_path() else {
+        return;
+    };
+    if std::fs::metadata(&path)
+        .map(|m| m.len() > 256 * 1024)
+        .unwrap_or(false)
+    {
+        let _ = std::fs::remove_file(&path);
+    }
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(f, "{ms} {event} session={session_id} -> {status}");
+    }
 }
 
 /// 从 hook JSON 负载里取 session_id、cwd 与 transcript_path。
