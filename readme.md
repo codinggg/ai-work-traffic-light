@@ -117,3 +117,9 @@ API Error: Request rejected (429) · Service Unavailable
 上下文安装hook这个也要支持codex，点击安装的时候查看是否安装了claude 和codex，安装了哪些都hook
 
 不行呀，我在vscode 中使用codex，红绿灯没有反应
+
+使用codex开始对话，codex回答之后，切换其他窗口，一直亮黄灯，打开codex窗口，闪黄灯，这个和原来的逻辑不一样，是有什么bug吗
+
+同时使用claude 和codex，有多个会话，红绿灯该怎么显示
+
+支持其他的平台，linux和 mac
