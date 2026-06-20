@@ -109,3 +109,17 @@ API Error: Request rejected (429) · Service Unavailable
 闪灯这个，我说连续的亮一下暗一下，这个暗就是灯的初始样式，不是变成黑色
 
 托盘图标右键最后增加关于的上下文选项，选中之后弹出一个对话框显示app的一些信息，这些信息在代码中可以修改
+
+现在增加对codex的支持，和已经实现claude一样
+
+局限已知：Codex 不通过该机制上报「工作中/等待批准」，所以没有绿灯/红灯。以后若要，可加「扫 ~/.codex/sessions/*.jsonl 推断」，已记在计划的 TODO 里。需要就说。
+
+上下文安装hook这个也要支持codex，点击安装的时候查看是否安装了claude 和codex，安装了哪些都hook
+
+不行呀，我在vscode 中使用codex，红绿灯没有反应
+
+使用codex开始对话，codex回答之后，切换其他窗口，一直亮黄灯，打开codex窗口，闪黄灯，这个和原来的逻辑不一样，是有什么bug吗
+
+同时使用claude 和codex，有多个会话，红绿灯该怎么显示
+
+支持其他的平台，linux和 mac

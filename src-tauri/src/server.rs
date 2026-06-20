@@ -14,19 +14,36 @@ use tauri_plugin_notification::NotificationExt;
 use crate::state::Aggregate;
 use crate::Shared;
 
+/// Codex 会话(没有 SessionEnd 事件)的黄灯保活时长：超过这么久没有新一轮事件就自动消隐，
+/// 避免「该你了」黄灯永久卡住。想调就改这里。
+const CODEX_IDLE_TIMEOUT_SECS: u64 = 600;
+
 pub fn start(app: AppHandle, shared: Arc<Shared>, port: u16) {
     // transcript 轮询线程：hooks 不会在 API 报错(如 429)时触发，但错误会写进会话
     // transcript。每 ~1.5s 读各活跃会话 transcript 的新增内容，发现 API 错误就把该
-    // 会话标记为 error(黄灯)并刷新显示。
+    // 会话标记为 error(黄灯)；同时监视 Codex 会话日志(working/idle)，并清理过期的
+    // Codex 会话(自动消隐)。任一有变化就刷新显示。
     {
         let app = app.clone();
         let shared = shared.clone();
-        std::thread::spawn(move || loop {
-            std::thread::sleep(std::time::Duration::from_millis(1500));
-            let changed = shared.store.lock().unwrap().scan_api_errors();
-            if changed {
-                let agg = shared.store.lock().unwrap().aggregate();
-                apply_effective(&app, &shared, agg);
+        std::thread::spawn(move || {
+            let mut codex = crate::codex::CodexWatcher::new();
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(1500));
+                let changed = {
+                    let mut store = shared.store.lock().unwrap();
+                    let err = store.scan_api_errors();
+                    let cdx = codex.poll(&mut store);
+                    let expired = store.expire(
+                        "codex:",
+                        std::time::Duration::from_secs(CODEX_IDLE_TIMEOUT_SECS),
+                    );
+                    err || cdx || expired
+                };
+                if changed {
+                    let agg = shared.store.lock().unwrap().aggregate();
+                    apply_effective(&app, &shared, agg);
+                }
             }
         });
     }
@@ -58,6 +75,9 @@ pub fn start(app: AppHandle, shared: Arc<Shared>, port: u16) {
                 }
                 store.aggregate()
             };
+
+            // 诊断：把收到的事件与结果状态追加到 events.log（排查灯色问题；问题定位后可移除）。
+            log_event(&event, &session_id, &agg.status);
 
             // 检测状态变化：进入红灯弹通知；任意状态切换(若开启)播放声音。
             let (changed, entered_blocked) = {
@@ -100,20 +120,24 @@ fn apply_effective(app: &AppHandle, shared: &Shared, real: Aggregate) {
         Aggregate {
             status: "neutral".to_string(),
             session_label: String::new(),
+            source: String::new(),
         }
     } else {
         real
     };
 
     let _ = app.emit("state-changed", &effective);
+    // 同步推一次"是否已查看(常亮)"：只有切到当前催你来源对应的窗口才算已查看。
+    // 这里立刻算一次消除状态变化时的闪烁延迟；窗口切换则由 main.rs 定时器负责。
+    let ack = crate::platform::foreground_matches_source(&effective.source);
+    let _ = app.emit("focus-changed", ack);
     if let Some(win) = app.get_webview_window("light") {
         if effective.status == "none" {
             let _ = win.hide();
         } else {
-            // 仅首次显示时自动定位到任务栏；之后保留用户拖动后的位置。
-            #[cfg(windows)]
+            // 仅首次显示时自动定位；之后保留用户拖动后的位置。
             if !shared.positioned.swap(true, Ordering::Relaxed) {
-                crate::taskbar::position_over_taskbar(&win);
+                crate::platform::place_window(&win);
             }
             let _ = win.show();
         }
@@ -157,12 +181,90 @@ fn play_sound(urgent: bool, custom: Option<&str>) {
         let _ = MessageBeep(if urgent { MB_ICONWARNING } else { MB_ICONASTERISK });
     }
 }
-#[cfg(not(windows))]
+
+/// macOS：自定义音用 afplay 放文件；默认放系统音（红灯更显眼）。
+#[cfg(target_os = "macos")]
+fn play_sound(urgent: bool, custom: Option<&str>) {
+    use std::process::Command;
+    if let Some(value) = custom {
+        if let Some(path) = crate::config::resolve_sound(value) {
+            let _ = Command::new("afplay").arg(path).spawn();
+            return;
+        }
+    }
+    let sys = if urgent {
+        "/System/Library/Sounds/Sosumi.aiff"
+    } else {
+        "/System/Library/Sounds/Funk.aiff"
+    };
+    let _ = Command::new("afplay").arg(sys).spawn();
+}
+
+/// Linux：自定义 .wav 依次试常见播放器；默认放 freedesktop 主题音，兜底响终端铃。
+#[cfg(target_os = "linux")]
+fn play_sound(urgent: bool, custom: Option<&str>) {
+    use std::process::Command;
+    if let Some(value) = custom {
+        if let Some(path) = crate::config::resolve_sound(value) {
+            let p = path.to_string_lossy().to_string();
+            for (cmd, args) in [
+                ("paplay", vec![p.as_str()]),
+                ("aplay", vec![p.as_str()]),
+                ("ffplay", vec!["-nodisp", "-autoexit", "-loglevel", "quiet", p.as_str()]),
+            ] {
+                if Command::new(cmd).args(&args).spawn().is_ok() {
+                    return;
+                }
+            }
+            return;
+        }
+    }
+    let event = if urgent { "dialog-warning" } else { "message" };
+    if Command::new("canberra-gtk-play")
+        .args(["-i", event])
+        .spawn()
+        .is_ok()
+    {
+        return;
+    }
+    eprint!("\x07"); // BEL 兜底
+}
+
+/// 其它非 Windows 平台：暂不发声。
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 fn play_sound(_urgent: bool, _custom: Option<&str>) {}
 
 /// 试听一个自定义提示音(托盘里选好后放一次让用户确认)；传 config 值(文件名或路径)。
 pub fn preview_sound(value: &str) {
     play_sound(false, Some(value));
+}
+
+/// 诊断：把收到的 hook 事件追加到 exe 同目录的 events.log，带毫秒时间戳与结果状态。
+/// 用于排查"某操作灯色不对"——能看清到底触发了哪些事件、顺序与间隔（例如权限弹窗
+/// 出现时是否真的有 Notification 事件）。超过 256KB 自动清空，避免无限增长。
+/// 这是临时诊断功能，问题定位后可移除。
+fn log_event(event: &str, session_id: &str, status: &str) {
+    use std::io::Write;
+    let Some(path) = crate::config::debug_log_path() else {
+        return;
+    };
+    if std::fs::metadata(&path)
+        .map(|m| m.len() > 256 * 1024)
+        .unwrap_or(false)
+    {
+        let _ = std::fs::remove_file(&path);
+    }
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(f, "{ms} {event} session={session_id} -> {status}");
+    }
 }
 
 /// 从 hook JSON 负载里取 session_id、cwd 与 transcript_path。

@@ -3,12 +3,12 @@
 // 本地状态端点(U3) + 状态机(U4)，红灯通知(U7)，任务栏定位(U6)。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod codex;
 mod config;
 mod installer;
+mod platform;
 mod server;
 mod state;
-#[cfg(windows)]
-mod taskbar;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -188,6 +188,7 @@ fn main() {
             let sep1 = PredefinedMenuItem::separator(app)?;
             let sep2 = PredefinedMenuItem::separator(app)?;
             let sep3 = PredefinedMenuItem::separator(app)?;
+            let sep4 = PredefinedMenuItem::separator(app)?;
             let menu = Menu::with_items(
                 app,
                 &[
@@ -198,9 +199,10 @@ fn main() {
                     &install,
                     &uninstall,
                     &sep2,
-                    &quit,
                     &about,
                     &sep3,
+                    &quit,
+                    &sep4,
                 ],
             )?;
 
@@ -337,34 +339,44 @@ fn main() {
             server::refresh(app.handle(), &shared);
 
             // 置顶/焦点检测线程要用的克隆（下面 server::start 会拿走 shared 本体）。
-            #[cfg(windows)]
             let shared_timer = shared.clone();
 
             // 本地状态端点(U3) + 状态机(U4) + 红灯通知(U7)。
             server::start(app.handle().clone(), shared, STATE_PORT);
 
-            // 后台维护线程（仅 Windows）。每 ~0.8s：
-            //   1) 把灯顶回最前——点任务栏会把任务栏抢到置顶最前、盖住灯；
-            //   2) 检测前台是否「工作窗口」——是则通知前端灯常亮，否则闪烁；
+            // 后台维护线程（全平台）。每 ~0.8s：
+            //   1) 仅 Windows：把灯顶回最前（点任务栏会把任务栏抢到置顶最前、盖住灯）；
+            //   2) 聚焦常亮：前台是当前催你来源对应的窗口则常亮，否则闪；
             //   3) 窗口位置变化则节流落盘到 config.json。
-            #[cfg(windows)]
             {
                 let app_handle = app.handle().clone();
                 let mut saved_pos = *shared_timer.last_pos.lock().unwrap();
-                let mut last_at_work: Option<bool> = None; // None = 还没通知过前端
+                let mut last_ack: Option<bool> = None; // None = 还没通知过前端
                 std::thread::spawn(move || loop {
                     std::thread::sleep(std::time::Duration::from_millis(800));
 
+                    #[cfg(windows)]
                     if let Some(win) = app_handle.get_webview_window("light") {
                         if win.is_visible().unwrap_or(false) {
-                            taskbar::reassert_topmost(&win);
+                            platform::reassert_topmost(&win);
                         }
                     }
 
-                    let at_work = taskbar::foreground_is_work_window();
-                    if last_at_work != Some(at_work) {
-                        last_at_work = Some(at_work);
-                        let _ = app_handle.emit("focus-changed", at_work);
+                    // "精确到窗口"的停闪：取当前在催你的来源(claude/codex)，
+                    // 只有前台是该来源对应的窗口才算已查看(常亮 is-ack)，否则继续闪。
+                    let source = shared_timer.store.lock().unwrap().aggregate().source;
+                    let ack = platform::foreground_matches_source(&source);
+                    if last_ack != Some(ack) {
+                        last_ack = Some(ack);
+                        // 开发模式打印：看清前台进程名 + 来源 + 是否已查看（排查灯闪/常亮）。
+                        #[cfg(debug_assertions)]
+                        eprintln!(
+                            "[traffic-light] 焦点变化: 前台={:?} 来源={:?} 已查看={}",
+                            platform::foreground_token(),
+                            source,
+                            ack
+                        );
+                        let _ = app_handle.emit("focus-changed", ack);
                     }
 
                     let cur = *shared_timer.last_pos.lock().unwrap();

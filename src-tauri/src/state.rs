@@ -4,11 +4,12 @@
 // 最紧急的那个(blocked > idle > working)，无会话则隐藏。红灯时附带需要
 // 处理的那个会话的标识(取自 cwd 的项目目录名)。
 //
-// 事件→状态映射(KTD1，待 U1 spike 实测校准)：
-//   UserPromptSubmit / PreToolUse / PostToolUse -> working(绿)
-//   Notification                                -> blocked(红)
-//   Stop / SubagentStop                         -> idle(黄)
-//   SessionEnd                                  -> 移除该会话
+// 事件→状态映射：
+//   UserPromptSubmit / PreToolUse / PostToolUse / PreCompact -> working(绿，工作中)
+//   Notification / Stop / SubagentStop                       -> idle(黄，该你了/闪烁提醒)
+//   SessionEnd                                               -> 移除该会话
+// 注：Notification(请求权限/确认)原本映射到 blocked(红)，按需求改为黄灯提醒；
+//     /compact 压缩上下文期间走 PreCompact -> 绿(工作中)。blocked(红)暂无触发场景，保留备用。
 
 use std::collections::HashMap;
 
@@ -16,6 +17,9 @@ use std::collections::HashMap;
 enum Status {
     Working,
     Idle,
+    /// 红灯(等你确认)。目前无触发场景：Notification 已按需求改为黄灯(idle)。
+    /// 保留枚举与下面的紧急度/标签逻辑，便于将来给某种"硬阻塞"重新启用红灯。
+    #[allow(dead_code)]
     Blocked,
     /// API 报错(如 429 限流/服务不可用)。hooks 不报这个，靠扫 transcript 发现。
     ApiError,
@@ -50,6 +54,8 @@ struct Session {
     transcript: Option<String>,
     /// transcript 已读到的字节偏移；None = 还没初始化(首次定位到文件末尾，只看新增)。
     tpos: Option<u64>,
+    /// 最近一次更新时间。用于 Codex 会话(无 SessionEnd)的自动过期。
+    updated: std::time::Instant,
 }
 
 impl Session {
@@ -74,15 +80,19 @@ pub struct Aggregate {
     pub status: String,
     #[serde(rename = "sessionLabel")]
     pub session_label: String,
+    /// 当前在"催你"的那个会话来自哪个工具："claude" / "codex" / ""(无)。
+    /// 用于"精确到窗口"的停闪判断：只有切到该来源对应的窗口才算已查看。
+    pub source: String,
 }
 
 impl Store {
     /// 应用一个 hook 事件，更新对应会话的状态。
     pub fn apply(&mut self, event: &str, session_id: &str, cwd: Option<&str>) {
         match event {
-            "Notification" => self.set(session_id, Status::Blocked, cwd),
-            "Stop" | "SubagentStop" => self.set(session_id, Status::Idle, cwd),
-            "UserPromptSubmit" | "PreToolUse" | "PostToolUse" => {
+            // 请求权限/确认(Notification) 与 完成这轮(Stop) 都算"该你了" -> 黄灯闪。
+            "Notification" | "Stop" | "SubagentStop" => self.set(session_id, Status::Idle, cwd),
+            // /compact 期间(PreCompact，手动或自动触发)Claude 在压缩上下文 = 工作中 -> 绿。
+            "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PreCompact" => {
                 self.set(session_id, Status::Working, cwd)
             }
             "SessionEnd" => {
@@ -100,12 +110,31 @@ impl Store {
             api_error: false,
             transcript: None,
             tpos: None,
+            updated: std::time::Instant::now(),
         });
         entry.status = status;
+        entry.updated = std::time::Instant::now();
         // 收到任意正常事件 = Claude 已越过之前的 API 错误，清掉错误标记。
         entry.api_error = false;
         if let Some(l) = label {
             entry.label = l;
+        }
+    }
+
+    /// 移除 id 以 `prefix` 开头、且超过 `max_age` 未更新的会话。返回是否有移除。
+    /// 用于 Codex：它没有 SessionEnd 事件，靠这个让黄灯过一会儿自动消隐，不永久卡住。
+    pub fn expire(&mut self, prefix: &str, max_age: std::time::Duration) -> bool {
+        let before = self.sessions.len();
+        self.sessions
+            .retain(|id, s| !(id.starts_with(prefix) && s.updated.elapsed() >= max_age));
+        before != self.sessions.len()
+    }
+
+    /// 该会话存在则刷新其活跃时间。Codex 监视器在会话有任何新增日志行时调用，
+    /// 避免一个长任务(久未 task_complete)被 expire 误清。
+    pub fn touch(&mut self, id: &str) {
+        if let Some(s) = self.sessions.get_mut(id) {
+            s.updated = std::time::Instant::now();
         }
     }
 
@@ -175,30 +204,34 @@ impl Store {
 
     /// 计算当前应显示的聚合状态。
     pub fn aggregate(&self) -> Aggregate {
+        // 取紧急度最高的那个会话(连同 id，用于判定来源 claude/codex)。
         let top = self
             .sessions
-            .values()
-            .map(|s| s.effective())
-            .max_by_key(|s| s.urgency());
+            .iter()
+            .max_by_key(|(_, s)| s.effective().urgency());
         match top {
             None => Aggregate {
                 status: "none".into(),
                 session_label: String::new(),
+                source: String::new(),
             },
-            Some(st) => {
-                // 仅红灯附带"是哪个会话"(挑一个 blocked 会话的标识)。
+            Some((id, s)) => {
+                let st = s.effective();
+                let source = if id.starts_with("codex:") {
+                    "codex"
+                } else {
+                    "claude"
+                };
+                // 仅红灯附带"是哪个会话"。
                 let label = if st == Status::Blocked {
-                    self.sessions
-                        .values()
-                        .find(|s| s.effective() == Status::Blocked)
-                        .map(|s| s.label.clone())
-                        .unwrap_or_default()
+                    s.label.clone()
                 } else {
                     String::new()
                 };
                 Aggregate {
                     status: st.as_str().into(),
                     session_label: label,
+                    source: source.into(),
                 }
             }
         }
@@ -240,13 +273,25 @@ mod tests {
     }
 
     #[test]
-    fn blocked_wins_and_carries_label() {
+    fn notification_is_idle_and_beats_working() {
         let mut s = Store::default();
         s.apply("UserPromptSubmit", "a", Some("e:/proj/foo"));
         s.apply("Notification", "b", Some("e:/work/bar"));
         let agg = s.aggregate();
-        assert_eq!(agg.status, "blocked");
-        assert_eq!(agg.session_label, "bar");
+        // Notification 现在=黄灯(该你了)，紧急度高于 working，故胜出。
+        assert_eq!(agg.status, "idle");
+        // 黄灯不带会话标签(标签是红灯特性，红灯暂停用)。
+        assert_eq!(agg.session_label, "");
+        assert_eq!(agg.source, "claude");
+    }
+
+    #[test]
+    fn codex_session_reports_codex_source() {
+        let mut s = Store::default();
+        s.apply("Stop", "codex:rollout-abc", Some("e:/x/foo"));
+        let agg = s.aggregate();
+        assert_eq!(agg.status, "idle");
+        assert_eq!(agg.source, "codex");
     }
 
     #[test]
@@ -260,12 +305,22 @@ mod tests {
     }
 
     #[test]
-    fn recovery_blocked_to_working() {
+    fn notification_then_activity_back_to_working() {
         let mut s = Store::default();
         s.apply("Notification", "a", Some("/x/foo"));
-        assert_eq!(s.aggregate().status, "blocked");
-        // 授权放行后工具继续 -> PostToolUse 让它回到 working
+        assert_eq!(s.aggregate().status, "idle"); // 该你了(黄)
+        // 授权放行/继续干活 -> PreToolUse/PostToolUse 让它回到 working(绿)
         s.apply("PostToolUse", "a", Some("/x/foo"));
+        assert_eq!(s.aggregate().status, "working");
+    }
+
+    #[test]
+    fn precompact_is_working() {
+        let mut s = Store::default();
+        s.apply("Stop", "a", Some("/x/foo"));
+        assert_eq!(s.aggregate().status, "idle"); // 完成 -> 黄
+        // /compact 开始压缩上下文(PreCompact) -> 绿(工作中)，不再停在黄。
+        s.apply("PreCompact", "a", Some("/x/foo"));
         assert_eq!(s.aggregate().status, "working");
     }
 
@@ -282,6 +337,18 @@ mod tests {
         assert_eq!(label_from_cwd("e:/mycode/work/foo"), "foo");
         assert_eq!(label_from_cwd("e:\\mycode\\bar\\"), "bar");
         assert_eq!(label_from_cwd("/single"), "single");
+    }
+
+    #[test]
+    fn expire_removes_only_matching_prefix_after_age() {
+        let mut s = Store::default();
+        s.apply("Stop", "codex:e:/x/foo", Some("e:/x/foo")); // Codex 会话(黄)
+        s.apply("UserPromptSubmit", "claude-a", Some("/x/bar")); // Claude 会话
+        // max_age=0 -> 立即过期：只清 codex: 前缀的，Claude 的保留。
+        assert!(s.expire("codex:", std::time::Duration::from_secs(0)));
+        assert_eq!(s.aggregate().status, "working"); // Claude 会话还在
+        // 再次过期无 codex 会话可清 -> 无变化。
+        assert!(!s.expire("codex:", std::time::Duration::from_secs(0)));
     }
 
     #[test]
