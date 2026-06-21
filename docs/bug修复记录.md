@@ -67,3 +67,8 @@ API Error: Request rejected (429) · Service Unavailable
 实现打标签上传到githu之后，执行action自动编译不同平台的程序，并将结果放到release中，可以让用户下载，现在release中只有源代码，没有编译出来的应用
 
 我看github上action编译报错，Node.js 20 已被弃用。以下操作原本面向 Node.js 20，但现在强制在 Node.js 24 上运行：actions/checkout@v4、actions/setup-node@v4 和 pnpm/action-setup@v4。
+
+上个任务说 VS Code 版 Claude Code 在弹权限/选择对话框时，根本不发任何 hook。弹窗出现前最后一个事件是 PreToolUse（绿），然后就是一片寂静，直到你点了选择才有下一个事件。所以 app 收不到任何"该你确认了"的信号，只能停在绿灯。
+这个问题我看有类似的红绿灯项目 https://github.com/wzp0514/claude-eyes ，你看下里面是怎么实现的
+
+修改下，黄灯闪烁之后，如果切换到活动窗口后，就停止闪烁，切换其他窗口也不闪烁
