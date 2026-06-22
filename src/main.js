@@ -25,10 +25,33 @@
   var widget = document.getElementById("widget");
   var labelEl = document.getElementById("label");
 
+  var currentStatus = "none";
+  var currentFocused = false;
+
+  function updateAck() {
+    if (currentFocused) {
+      widget.classList.add("is-ack");
+      if (currentStatus === "idle" || currentStatus === "error") {
+        widget.classList.add("yellow-acked");
+      }
+    } else {
+      if ((currentStatus === "idle" || currentStatus === "error") && widget.classList.contains("yellow-acked")) {
+        widget.classList.add("is-ack");
+      } else {
+        widget.classList.remove("is-ack");
+      }
+    }
+  }
+
   // 把一个聚合状态应用到灯。
   function applyState(state) {
     var status = (state && state.status) || "none";
     var cls = STATUS_CLASS[status] || "is-none";
+
+    if (status !== currentStatus) {
+      widget.classList.remove("yellow-acked");
+      currentStatus = status;
+    }
 
     widget.classList.remove(
       "is-working",
@@ -54,6 +77,8 @@
       labelEl.textContent = "";
       widget.setAttribute("title", "AI Work Traffic Light");
     }
+
+    updateAck();
   }
 
   // 暴露给后端/调试调用。
@@ -96,9 +121,10 @@
       });
       // 后端检测到前台是工作窗口(VSCode/终端/Claude)时 payload=true -> 灯常亮(停闪)；
       // 否则 false -> 红/黄灯恢复闪烁提醒。绿灯本来就不闪。
+      // 需求：黄灯闪烁之后，如果切换到活动窗口后，就停止闪烁，切换其他窗口也不闪烁。
       T.event.listen("focus-changed", function (evt) {
-        var atWork = !!(evt && evt.payload);
-        widget.classList.toggle("is-ack", atWork);
+        currentFocused = !!(evt && evt.payload);
+        updateAck();
       });
       return true;
     }
