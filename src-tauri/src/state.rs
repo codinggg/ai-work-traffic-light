@@ -219,6 +219,8 @@ impl Store {
                 let st = s.effective();
                 let source = if id.starts_with("codex:") {
                     "codex"
+                } else if id.starts_with("antigravity:") {
+                    "antigravity"
                 } else {
                     "claude"
                 };

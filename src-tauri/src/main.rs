@@ -3,6 +3,7 @@
 // 本地状态端点(U3) + 状态机(U4)，红灯通知(U7)，任务栏定位(U6)。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod antigravity;
 mod codex;
 mod config;
 mod installer;

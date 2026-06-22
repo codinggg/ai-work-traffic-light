@@ -72,3 +72,7 @@ API Error: Request rejected (429) · Service Unavailable
 这个问题我看有类似的红绿灯项目 https://github.com/wzp0514/claude-eyes ，你看下里面是怎么实现的
 
 修改下，黄灯闪烁之后，如果切换到活动窗口后，就停止闪烁，切换其他窗口也不闪烁
+
+增加对antigravity ide 和antigravity 的hooks才行
+
+看下这个项目也要支持codex的支持，刚看了下hooks没有发现codex，你看修复下，看下代码里是否也要修改支持codex

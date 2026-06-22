@@ -34,9 +34,6 @@ const EDITOR_TOKENS: &[&str] = &[
     "xterm",
 ];
 
-/// Codex 的「工作窗口」标识：Codex 独立窗口。
-/// 若你的 Codex 跑在 VS Code 扩展里（窗口名是 code），把 "code" 也加进来即可。
-const CODEX_TOKENS: &[&str] = &["codex"];
 
 /// 前台窗口是否是给定来源（"claude"/"codex"）对应的工作窗口。平台无关。
 /// 用于“精确到窗口”的停闪：哪个来源在催你，就得切到它的窗口才算已查看（常亮）。
@@ -45,8 +42,7 @@ pub fn foreground_matches_source(source: &str) -> bool {
         return false;
     };
     let set: &[&str] = match source {
-        "codex" => CODEX_TOKENS,
-        "claude" => EDITOR_TOKENS,
+        "codex" | "claude" | "antigravity" => EDITOR_TOKENS,
         _ => return false,
     };
     set.contains(&tok.as_str())

@@ -36,6 +36,7 @@ fn settings_paths() -> Result<Vec<PathBuf>, String> {
         base.join(".claude").join("settings.json"),
         base.join(".antigravity").join("settings.json"),
         base.join(".antigravity-ide").join("settings.json"),
+        base.join(".codex").join("settings.json"),
     ])
 }
 
@@ -124,7 +125,7 @@ pub fn install() -> Result<String, String> {
     }
 
     Ok(format!(
-        "{}\n共新增 {} 个事件 hook。请重启 Claude Code / Antigravity IDE 生效。",
+        "{}\n共新增 {} 个事件 hook。请重启 Claude Code / Antigravity IDE / Codex 生效。",
         msgs.join("\n"),
         total_added
     ))
@@ -178,7 +179,7 @@ pub fn uninstall() -> Result<String, String> {
     }
 
     Ok(format!(
-        "共从各个配置文件中移除 {} 个 hook 条目。请重启 Claude Code / Antigravity IDE 生效。",
+        "共从各个配置文件中移除 {} 个 hook 条目。请重启 Claude Code / Antigravity IDE / Codex 生效。",
         total_removed
     ))
 }
