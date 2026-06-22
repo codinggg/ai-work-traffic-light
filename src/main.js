@@ -111,7 +111,7 @@
     widget.classList.add("is-neutral", "is-boot");
     setTimeout(function () {
       widget.classList.remove("is-boot");
-    }, 3000); // 对应 styles.css 里 boot 动画总时长(约 1.05s)，留余量
+    }, 5000); // 对应 styles.css 里 boot 动画总时长(约 1.05s)，留余量
   }
   function tryListen() {
     var T = window.__TAURI__;

@@ -14,6 +14,8 @@ const EDITOR_TOKENS: &[&str] = &[
     "cursor",
     "windsurf",
     "claude",
+    "antigravity ide",
+    "antigravity",
     // 终端（Windows / macOS / Linux）
     "windowsterminal",
     "wt",

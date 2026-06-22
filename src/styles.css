@@ -215,13 +215,13 @@ body {
 .widget.is-boot .lamp-red {
   /*            持续时间(亮多久)        延迟时间(何时开始)*/
   /*                     👇              👇        */
-  animation: boot-flash 0.7s ease-in-out 0.5s 1 both;
+  animation: boot-flash 1s ease-in-out 0.5s 1 both;
 }
 .widget.is-boot .lamp-yellow {
-  animation: boot-flash 0.7s ease-in-out 1.2s 1 both;
+  animation: boot-flash 1s ease-in-out 1.5s 1 both;
 }
 .widget.is-boot .lamp-green {
-  animation: boot-flash 0.7s ease-in-out 1.9s 1 both;
+  animation: boot-flash 1s ease-in-out 2.5s 1 both;
 }
 @keyframes boot-flash {
   0%,

@@ -27,11 +27,16 @@ const EVENTS: &[(&str, bool)] = &[
     ("SessionEnd", false),
 ];
 
-fn settings_path() -> Result<PathBuf, String> {
+fn settings_paths() -> Result<Vec<PathBuf>, String> {
     let home = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .ok_or("找不到用户主目录 (USERPROFILE/HOME)")?;
-    Ok(PathBuf::from(home).join(".claude").join("settings.json"))
+    let base = PathBuf::from(home);
+    Ok(vec![
+        base.join(".claude").join("settings.json"),
+        base.join(".antigravity").join("settings.json"),
+        base.join(".antigravity-ide").join("settings.json"),
+    ])
 }
 
 fn our_command(event: &str) -> String {
@@ -44,25 +49,23 @@ fn url_marker() -> String {
     format!("127.0.0.1:{STATE_PORT}/event/")
 }
 
-/// 把我们的 hooks 合并进 settings.json。返回给用户看的结果说明。
-pub fn install() -> Result<String, String> {
-    let path = settings_path()?;
+fn process_install_for_path(path: &PathBuf) -> Result<usize, String> {
     std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
 
     let mut root: Value = if path.exists() {
-        let txt = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        let txt = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         std::fs::write(path.with_extension("json.bak"), &txt).ok(); // 备份
-        serde_json::from_str(&txt).map_err(|e| format!("settings.json 解析失败: {e}"))?
+        serde_json::from_str(&txt).map_err(|e| format!("{} 解析失败: {}", path.display(), e))?
     } else {
         json!({})
     };
 
-    let obj = root.as_object_mut().ok_or("settings.json 顶层不是对象")?;
+    let obj = if let Some(o) = root.as_object_mut() { o } else { return Err(format!("{} 顶层不是对象", path.display())) };
     let hooks = obj
         .entry("hooks")
         .or_insert_with(|| json!({}))
         .as_object_mut()
-        .ok_or("hooks 字段不是对象")?;
+        .ok_or_else(|| format!("{} 的 hooks 字段不是对象", path.display()))?;
 
     let mut added = 0;
     for (event, needs_matcher) in EVENTS {
@@ -98,22 +101,41 @@ pub fn install() -> Result<String, String> {
     }
 
     let out = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
-    std::fs::write(&path, out).map_err(|e| e.to_string())?;
+    std::fs::write(path, out).map_err(|e| e.to_string())?;
+    Ok(added)
+}
+
+/// 把我们的 hooks 合并进 settings.json。返回给用户看的结果说明。
+pub fn install() -> Result<String, String> {
+    let paths = settings_paths()?;
+    let mut total_added = 0;
+    let mut msgs = Vec::new();
+
+    for path in paths {
+        match process_install_for_path(&path) {
+            Ok(added) => {
+                total_added += added;
+                msgs.push(format!("已写入 {}", path.display()));
+            }
+            Err(e) => {
+                msgs.push(format!("失败 {}: {}", path.display(), e));
+            }
+        }
+    }
+
     Ok(format!(
-        "已写入 {}\n新增 {} 个事件 hook。请重启 Claude Code 生效。",
-        path.display(),
-        added
+        "{}\n共新增 {} 个事件 hook。请重启 Claude Code / Antigravity IDE 生效。",
+        msgs.join("\n"),
+        total_added
     ))
 }
 
-/// 移除我们加的 hook 条目（按本地端点 URL 特征匹配）。
-pub fn uninstall() -> Result<String, String> {
-    let path = settings_path()?;
+fn process_uninstall_for_path(path: &PathBuf) -> Result<usize, String> {
     if !path.exists() {
-        return Ok("settings.json 不存在，无需卸载。".into());
+        return Ok(0);
     }
-    let txt = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let mut root: Value = serde_json::from_str(&txt).map_err(|e| e.to_string())?;
+    let txt = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let mut root: Value = serde_json::from_str(&txt).map_err(|e| format!("{} 解析失败: {}", path.display(), e))?;
     let marker = url_marker();
     let mut removed = 0;
 
@@ -140,8 +162,23 @@ pub fn uninstall() -> Result<String, String> {
     }
 
     let out = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
-    std::fs::write(&path, out).map_err(|e| e.to_string())?;
+    std::fs::write(path, out).map_err(|e| e.to_string())?;
+    Ok(removed)
+}
+
+/// 移除我们加的 hook 条目（按本地端点 URL 特征匹配）。
+pub fn uninstall() -> Result<String, String> {
+    let paths = settings_paths()?;
+    let mut total_removed = 0;
+    
+    for path in paths {
+        if let Ok(removed) = process_uninstall_for_path(&path) {
+            total_removed += removed;
+        }
+    }
+
     Ok(format!(
-        "已移除 {removed} 个 hook 条目。请重启 Claude Code 生效。"
+        "共从各个配置文件中移除 {} 个 hook 条目。请重启 Claude Code / Antigravity IDE 生效。",
+        total_removed
     ))
 }
