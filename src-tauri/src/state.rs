@@ -5,11 +5,12 @@
 // 处理的那个会话的标识(取自 cwd 的项目目录名)。
 //
 // 事件→状态映射：
-//   UserPromptSubmit / PreToolUse / PostToolUse / PreCompact -> working(绿，工作中)
-//   Notification / Stop / SubagentStop                       -> idle(黄，该你了/闪烁提醒)
-//   SessionEnd                                               -> 移除该会话
-// 注：Notification(请求权限/确认)原本映射到 blocked(红)，按需求改为黄灯提醒；
-//     /compact 压缩上下文期间走 PreCompact -> 绿(工作中)。blocked(红)暂无触发场景，保留备用。
+//   UserPromptSubmit / PreToolUse / PostToolUse / PreCompact      -> working(绿，工作中)
+//   PermissionRequest / Notification / Stop / SubagentStop        -> idle(黄，该你了/闪烁提醒)
+//   SessionEnd                                                    -> 移除该会话
+// 注：PermissionRequest = Claude 弹权限/选择对话框时触发的专用事件(VS Code 下 Notification
+//     不触发，靠它才能检测到"等你确认")，映射到黄灯提醒；/compact 走 PreCompact -> 绿。
+//     blocked(红)暂无触发场景，保留备用。
 
 use std::collections::HashMap;
 
@@ -89,8 +90,11 @@ impl Store {
     /// 应用一个 hook 事件，更新对应会话的状态。
     pub fn apply(&mut self, event: &str, session_id: &str, cwd: Option<&str>) {
         match event {
-            // 请求权限/确认(Notification) 与 完成这轮(Stop) 都算"该你了" -> 黄灯闪。
-            "Notification" | "Stop" | "SubagentStop" => self.set(session_id, Status::Idle, cwd),
+            // 弹权限/选择框(PermissionRequest)、请求权限/确认(Notification)、完成这轮(Stop)
+            // 都算"该你了" -> 黄灯闪。PermissionRequest 是 VS Code 下唯一可靠的"等你确认"信号。
+            "PermissionRequest" | "Notification" | "Stop" | "SubagentStop" => {
+                self.set(session_id, Status::Idle, cwd)
+            }
             // /compact 期间(PreCompact，手动或自动触发)Claude 在压缩上下文 = 工作中 -> 绿。
             "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PreCompact" => {
                 self.set(session_id, Status::Working, cwd)
@@ -324,6 +328,16 @@ mod tests {
         // /compact 开始压缩上下文(PreCompact) -> 绿(工作中)，不再停在黄。
         s.apply("PreCompact", "a", Some("/x/foo"));
         assert_eq!(s.aggregate().status, "working");
+    }
+
+    #[test]
+    fn permission_request_is_idle() {
+        let mut s = Store::default();
+        s.apply("PreToolUse", "a", Some("/x/foo"));
+        assert_eq!(s.aggregate().status, "working");
+        // 权限/选择弹窗(PermissionRequest) -> 黄灯(该你了)，这是 VS Code 下的关键信号。
+        s.apply("PermissionRequest", "a", Some("/x/foo"));
+        assert_eq!(s.aggregate().status, "idle");
     }
 
     #[test]

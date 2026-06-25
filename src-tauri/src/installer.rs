@@ -21,6 +21,9 @@ const EVENTS: &[(&str, bool)] = &[
     ("PreToolUse", true),
     ("PostToolUse", true),
     ("Notification", false),
+    // PermissionRequest: Claude 弹权限/选择对话框时触发。VS Code 下 Notification 不触发，
+    // 靠这个才能检测到"等你确认" -> 黄灯。matcher "" 匹配所有工具的权限请求。
+    ("PermissionRequest", true),
     ("Stop", false),
     // PreCompact: /compact(手动或自动)压缩上下文时触发 -> 灯亮绿(工作中)。
     ("PreCompact", false),
