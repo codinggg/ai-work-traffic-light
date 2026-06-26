@@ -62,7 +62,8 @@ body {
   background: #15171c;
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: calc(9px * var(--traffic-scale));
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  box-shadow: none;
+  overflow: hidden;
 }
 
 .widget.is-vertical {

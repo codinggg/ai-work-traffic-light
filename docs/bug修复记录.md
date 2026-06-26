@@ -89,3 +89,5 @@ API Error: Request rejected (429) · Service Unavailable
 鼠标靠近红绿灯，不要显示 ai-work-traffic-light的字
 
 算了，增加个功能，红绿灯默认是现有的大小。在红绿灯没有锁定位置时，鼠标在红绿灯窗口边缘时显示放大缩小的指针，可以调整红绿灯大小，大小调整后也保存到config中，下次打开读取config展示大小。
+
+我看红绿灯框的下面俩个圆角外面有点阴影，灯框外面四个圆角外面应该都是透明的
