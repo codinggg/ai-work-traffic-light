@@ -58,7 +58,7 @@ body {
   gap: calc(5px * var(--traffic-scale));
   width: 100%;
   height: 100%;
-  padding: calc(8px * var(--traffic-scale)) calc(6px * var(--traffic-scale));
+  padding: calc(3px * var(--traffic-scale)) calc(6px * var(--traffic-scale));
   background: #15171c;
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: calc(9px * var(--traffic-scale));
@@ -76,7 +76,7 @@ body {
   flex-direction: column;
   gap: calc(7px * var(--traffic-scale));
   justify-content: center;
-  padding: calc(8px * var(--traffic-scale)) calc(6px * var(--traffic-scale));
+  padding: calc(3px * var(--traffic-scale)) calc(6px * var(--traffic-scale));
 }
 
 /* 灯：默认用浅色(--off)，亮起时用深色(--on)+光晕 */

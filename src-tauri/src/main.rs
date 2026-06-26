@@ -97,8 +97,8 @@ fn show_about(app: &AppHandle) {
 /// 托盘"锁定位置"勾选项句柄（放入 managed state，供命令同步勾选态）。
 struct LockToggle(tauri::menu::CheckMenuItem<tauri::Wry>);
 
-const HORIZONTAL_SIZE: (f64, f64) = (99.0, 43.0);
-const VERTICAL_SIZE: (f64, f64) = (62.0, 176.0);
+const HORIZONTAL_SIZE: (f64, f64) = (99.0, 33.0);
+const VERTICAL_SIZE: (f64, f64) = (62.0, 166.0);
 const OLD_HORIZONTAL_SIZE: (f64, f64) = (205.0, 80.0);
 const OLD_VERTICAL_SIZE: (f64, f64) = (80.0, 205.0);
 const MIN_SIZE_SCALE: f64 = 0.6;

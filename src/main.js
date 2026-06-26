@@ -34,8 +34,8 @@
   var MIN_SIZE_SCALE = 0.6;
   var MAX_SIZE_SCALE = 5;
   var BASE_SIZE = {
-    horizontal: { width: 99, height: 43 },
-    vertical: { width: 62, height: 176 },
+    horizontal: { width: 99, height: 33 },
+    vertical: { width: 62, height: 166 },
   };
   var activeResize = null;
 
