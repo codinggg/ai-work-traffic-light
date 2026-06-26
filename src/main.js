@@ -27,10 +27,235 @@
 
   var currentStatus = "none";
   var currentFocused = false;
+  var currentVertical = false;
+  var currentLocked = false;
+
+  var RESIZE_EDGE = 8;
+  var MIN_SIZE_SCALE = 0.6;
+  var MAX_SIZE_SCALE = 5;
+  var BASE_SIZE = {
+    horizontal: { width: 99, height: 43 },
+    vertical: { width: 62, height: 176 },
+  };
+  var activeResize = null;
+
+  var CURSOR_BY_DIRECTION = {
+    North: "n-resize",
+    South: "s-resize",
+    East: "e-resize",
+    West: "w-resize",
+    NorthEast: "ne-resize",
+    NorthWest: "nw-resize",
+    SouthEast: "se-resize",
+    SouthWest: "sw-resize",
+  };
+
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+
+  function updateTrafficScale() {
+    var base = currentVertical ? BASE_SIZE.vertical : BASE_SIZE.horizontal;
+    var width = Math.max(1, window.innerWidth || base.width);
+    var height = Math.max(1, window.innerHeight || base.height);
+    var scale = clamp(Math.min(width / base.width, height / base.height), MIN_SIZE_SCALE, MAX_SIZE_SCALE);
+    widget.style.setProperty("--traffic-scale", scale.toFixed(3));
+  }
+
+  function syncLayoutWindowSize(vertical) {
+    var T = window.__TAURI__;
+    if (T && T.core && typeof T.core.invoke === "function") {
+      return T.core.invoke("set_light_layout_size", { vertical: !!vertical });
+    }
+    return Promise.resolve();
+  }
 
   function applyLayout(vertical) {
-    widget.classList.toggle("is-vertical", !!vertical);
+    var next = !!vertical;
+    currentVertical = next;
+    syncLayoutWindowSize(next)
+      .catch(function () {})
+      .then(function () {
+        widget.classList.toggle("is-vertical", next);
+        widget.removeAttribute("title");
+        updateTrafficScale();
+      });
   }
+
+  function getResizeDirection(e) {
+    if (currentLocked || widget.classList.contains("is-none")) return null;
+
+    var width = window.innerWidth || document.documentElement.clientWidth || 0;
+    var height = window.innerHeight || document.documentElement.clientHeight || 0;
+    if (width <= 0 || height <= 0) return null;
+
+    var north = e.clientY <= RESIZE_EDGE;
+    var south = e.clientY >= height - RESIZE_EDGE;
+    var west = e.clientX <= RESIZE_EDGE;
+    var east = e.clientX >= width - RESIZE_EDGE;
+
+    if (north && east) return "NorthEast";
+    if (north && west) return "NorthWest";
+    if (south && east) return "SouthEast";
+    if (south && west) return "SouthWest";
+    if (north) return "North";
+    if (south) return "South";
+    if (east) return "East";
+    if (west) return "West";
+    return null;
+  }
+
+  function getCurrentWindow() {
+    var T = window.__TAURI__;
+    if (T && T.window && typeof T.window.getCurrentWindow === "function") {
+      return T.window.getCurrentWindow();
+    }
+    return null;
+  }
+
+  function invokeWindowCommand(name, args) {
+    var T = window.__TAURI__;
+    if (T && T.core && typeof T.core.invoke === "function") {
+      return T.core.invoke("plugin:window|" + name, args || {});
+    }
+    return Promise.resolve();
+  }
+
+  function startWindowDrag() {
+    var win = getCurrentWindow();
+    if (win && typeof win.startDragging === "function") {
+      return win.startDragging();
+    }
+    return invokeWindowCommand("start_dragging");
+  }
+
+  function startWindowResize(direction, e) {
+    var T = window.__TAURI__;
+    if (!T || !T.core || typeof T.core.invoke !== "function") {
+      return Promise.resolve();
+    }
+    return T.core.invoke("get_light_window_geometry").then(function (geometry) {
+      activeResize = {
+        direction: direction,
+        startScreenX: e.screenX,
+        startScreenY: e.screenY,
+        geometry: geometry,
+        pointerId: null,
+      };
+    });
+  }
+
+  function resizeScaleFromPointer(active, e) {
+    var base = currentVertical ? BASE_SIZE.vertical : BASE_SIZE.horizontal;
+    var dx = e.screenX - active.startScreenX;
+    var dy = e.screenY - active.startScreenY;
+    var candidates = [];
+
+    if (active.direction.indexOf("East") !== -1) {
+      candidates.push((active.geometry.width + dx) / base.width);
+    }
+    if (active.direction.indexOf("West") !== -1) {
+      candidates.push((active.geometry.width - dx) / base.width);
+    }
+    if (active.direction.indexOf("South") !== -1) {
+      candidates.push((active.geometry.height + dy) / base.height);
+    }
+    if (active.direction.indexOf("North") !== -1) {
+      candidates.push((active.geometry.height - dy) / base.height);
+    }
+
+    if (!candidates.length) {
+      candidates.push(active.geometry.width / base.width);
+    }
+
+    return clamp(Math.max.apply(Math, candidates), MIN_SIZE_SCALE, MAX_SIZE_SCALE);
+  }
+
+  function applyCustomResize(e) {
+    if (!activeResize) return;
+
+    var T = window.__TAURI__;
+    if (!T || !T.core || typeof T.core.invoke !== "function") return;
+
+    var base = currentVertical ? BASE_SIZE.vertical : BASE_SIZE.horizontal;
+    var scale = resizeScaleFromPointer(activeResize, e);
+    var width = base.width * scale;
+    var height = base.height * scale;
+    var x = activeResize.geometry.x;
+    var y = activeResize.geometry.y;
+
+    if (activeResize.direction.indexOf("West") !== -1) {
+      x = activeResize.geometry.x + activeResize.geometry.width - width;
+    }
+    if (activeResize.direction.indexOf("North") !== -1) {
+      y = activeResize.geometry.y + activeResize.geometry.height - height;
+    }
+
+    T.core
+      .invoke("set_light_window_geometry", {
+        vertical: currentVertical,
+        width: width,
+        height: height,
+        x: x,
+        y: y,
+      })
+      .catch(function () {});
+  }
+
+  function endCustomResize(e) {
+    if (!activeResize) return;
+    applyCustomResize(e);
+    if (activeResize.pointerId !== null && widget.releasePointerCapture) {
+      try {
+        widget.releasePointerCapture(activeResize.pointerId);
+      } catch (_) {}
+    }
+    activeResize = null;
+    document.removeEventListener("pointermove", applyCustomResize, true);
+    document.removeEventListener("pointerup", endCustomResize, true);
+  }
+
+  function updateResizeCursor(e) {
+    var direction = getResizeDirection(e);
+    document.body.style.cursor = direction ? CURSOR_BY_DIRECTION[direction] : "default";
+  }
+
+  document.addEventListener("mousemove", updateResizeCursor, true);
+  document.addEventListener("mouseleave", function () {
+    document.body.style.cursor = "default";
+  });
+  document.addEventListener(
+    "pointerdown",
+    function (e) {
+      if (e.button !== 0 || currentLocked || widget.classList.contains("is-none")) return;
+
+      var direction = getResizeDirection(e);
+      e.preventDefault();
+      e.stopPropagation();
+
+      if (direction) {
+        startWindowResize(direction, e)
+          .then(function () {
+            if (!activeResize) return;
+            activeResize.startScreenX = e.screenX;
+            activeResize.startScreenY = e.screenY;
+            activeResize.pointerId = e.pointerId;
+            if (widget.setPointerCapture) {
+              try {
+                widget.setPointerCapture(e.pointerId);
+              } catch (_) {}
+            }
+            document.addEventListener("pointermove", applyCustomResize, true);
+            document.addEventListener("pointerup", endCustomResize, true);
+          })
+          .catch(function () {});
+      } else {
+        startWindowDrag().catch(function () {});
+      }
+    },
+    true
+  );
+  window.addEventListener("resize", updateTrafficScale);
 
   function updateAck() {
     if (currentFocused) {
@@ -73,14 +298,12 @@
     if (status === "blocked" && label) {
       labelEl.textContent = label;
       widget.classList.add("has-label");
-      widget.setAttribute("title", "需要你：" + label);
     } else if (status === "error") {
       labelEl.textContent = "";
-      widget.setAttribute("title", "API 报错（限流/服务不可用）");
     } else {
       labelEl.textContent = "";
-      widget.setAttribute("title", "AI Work Traffic Light");
     }
+    widget.removeAttribute("title");
 
     updateAck();
   }
@@ -101,6 +324,7 @@
   // 监听后端 state-changed；__TAURI__ 可能稍后才注入，重试约 5 秒。
   function listenForState() {
     playBoot();
+    updateTrafficScale();
     if (tryListen()) return;
     var tries = 0;
     var timer = setInterval(function () {
@@ -126,8 +350,17 @@
       T.event.listen("layout-changed", function (evt) {
         applyLayout(!!(evt && evt.payload));
       });
+      T.event.listen("locked-changed", function (evt) {
+        currentLocked = !!(evt && evt.payload);
+        if (currentLocked) document.body.style.cursor = "default";
+      });
       if (T.core && typeof T.core.invoke === "function") {
         T.core.invoke("get_light_layout").then(applyLayout).catch(function () {});
+        T.core.invoke("get_locked")
+          .then(function (locked) {
+            currentLocked = !!locked;
+          })
+          .catch(function () {});
       }
       // 后端检测到前台是工作窗口(VSCode/终端/Claude)时 payload=true -> 灯常亮(停闪)；
       // 否则 false -> 红/黄灯恢复闪烁提醒。绿灯本来就不闪。

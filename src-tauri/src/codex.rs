@@ -14,6 +14,10 @@ use std::path::{Path, PathBuf};
 
 use crate::state::Store;
 
+const RECENT_ROLLOUT_SECS: u64 = 600;
+const INITIAL_HEAD_BYTES: u64 = 64 * 1024;
+const INITIAL_SCAN_BYTES: u64 = 1024 * 1024;
+
 /// 监视器：记录每个 rollout 文件已读到的字节偏移，每轮只处理新增行。
 pub struct CodexWatcher {
     sessions_dir: Option<PathBuf>,
@@ -80,9 +84,7 @@ impl CodexWatcher {
         let start = match self.offsets.get(path).copied() {
             Some(p) => p,
             None => {
-                // 首次见到：定位到末尾，只看之后的新增(不回放历史)。
-                self.offsets.insert(path.to_path_buf(), len);
-                return false;
+                return self.catch_up_recent_file(path, &meta, len, store);
             }
         };
         if len <= start {
@@ -127,6 +129,73 @@ impl CodexWatcher {
         store.touch(&session);
         changed
     }
+
+    fn catch_up_recent_file(
+        &mut self,
+        path: &Path,
+        meta: &std::fs::Metadata,
+        len: u64,
+        store: &mut Store,
+    ) -> bool {
+        let recent = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .map(|elapsed| elapsed.as_secs() <= RECENT_ROLLOUT_SECS)
+            .unwrap_or(false);
+
+        if !recent || len == 0 {
+            self.offsets.insert(path.to_path_buf(), len);
+            return false;
+        }
+
+        let start = len.saturating_sub(INITIAL_SCAN_BYTES);
+        let mut changed = false;
+        if start > 0 {
+            changed |= self.read_and_apply(path, 0, len.min(INITIAL_HEAD_BYTES), store, false);
+        }
+        changed |= self.read_and_apply(path, start, len, store, start > 0);
+        self.offsets.entry(path.to_path_buf()).or_insert(len);
+        changed
+    }
+
+    fn read_and_apply(
+        &mut self,
+        path: &Path,
+        start: u64,
+        len: u64,
+        store: &mut Store,
+        drop_first_partial_line: bool,
+    ) -> bool {
+        use std::io::{Read, Seek, SeekFrom};
+        let Ok(mut f) = std::fs::File::open(path) else {
+            return false;
+        };
+        if f.seek(SeekFrom::Start(start)).is_err() {
+            return false;
+        }
+        let mut bytes = Vec::new();
+        if f.take(len - start).read_to_end(&mut bytes).is_err() {
+            return false;
+        }
+        let buf = String::from_utf8_lossy(&bytes);
+        let consume = buf.rfind('\n').map(|i| i + 1).unwrap_or(0);
+        if consume == 0 {
+            return false;
+        }
+        self.offsets
+            .insert(path.to_path_buf(), start + consume as u64);
+
+        let mut lines = &buf[..consume];
+        if drop_first_partial_line {
+            let Some(first_newline) = lines.find('\n') else {
+                return false;
+            };
+            lines = &lines[first_newline + 1..];
+        }
+
+        apply_codex_events(lines, store, &session_key(path))
+    }
 }
 
 /// 该 rollout 文件对应的会话 key（用文件名里的 session uuid，稳定且各会话互不相同）。
@@ -135,22 +204,47 @@ fn session_key(path: &Path) -> String {
     format!("codex:{stem}")
 }
 
+fn apply_codex_events(lines: &str, store: &mut Store, session: &str) -> bool {
+    let mut changed = false;
+    for line in lines.lines() {
+        match codex_event(line) {
+            Some("task_started") => {
+                store.apply("PreToolUse", session, None); // -> working(绿)
+                changed = true;
+            }
+            Some("task_complete") => {
+                store.apply("Stop", session, None); // -> idle(黄)
+                changed = true;
+            }
+            _ => {}
+        }
+    }
+    store.touch(session);
+    changed
+}
+
 /// 一行 rollout JSON 是否是 task_started / task_complete 事件。
 /// 廉价子串预筛，避免每行都做完整 JSON 解析(日志行可能很大)。
 fn codex_event(line: &str) -> Option<&'static str> {
-    let complete = line.contains("\"type\":\"task_complete\"");
-    let started = line.contains("\"type\":\"task_started\"");
+    let complete = line.contains("\"task_complete\"");
+    let started = line.contains("\"task_started\"");
     if !complete && !started {
         return None;
     }
-    // 确认是 event_msg 的 payload（避免误命中别处文本里的同名字样）。
-    if !line.contains("\"type\":\"event_msg\"") {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+        return None;
+    };
+    if value.get("type").and_then(|v| v.as_str()) != Some("event_msg") {
         return None;
     }
-    if complete {
-        Some("task_complete")
-    } else {
-        Some("task_started")
+    match value
+        .get("payload")
+        .and_then(|v| v.get("type"))
+        .and_then(|v| v.as_str())
+    {
+        Some("task_complete") => Some("task_complete"),
+        Some("task_started") => Some("task_started"),
+        _ => None,
     }
 }
 
@@ -175,7 +269,8 @@ fn max_subdir(dir: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::codex_event;
+    use super::*;
+    use crate::state::Store;
 
     #[test]
     fn recognizes_task_events_only_in_event_msg() {
@@ -194,5 +289,57 @@ mod tests {
             codex_event(r#"{"type":"response_item","payload":{"type":"task_complete"}}"#),
             None
         );
+        assert_eq!(
+            codex_event(
+                r#"{"timestamp":"..", "type": "event_msg", "payload": {"type": "task_started"}}"#
+            ),
+            Some("task_started")
+        );
+        assert_eq!(
+            codex_event(
+                r#"{"type":"event_msg","payload":{"type":"agent_message","message":"task_complete"}}"#
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn first_seen_recent_file_catches_up_current_state() {
+        use std::io::Write;
+
+        let path = std::env::temp_dir().join(format!(
+            "aiwtl_codex_{}.jsonl",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"session_id\":\"s\"}}\n",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n"
+            ),
+        )
+        .unwrap();
+
+        let mut watcher = CodexWatcher {
+            sessions_dir: None,
+            offsets: HashMap::new(),
+        };
+        let mut store = Store::default();
+
+        assert!(watcher.tail_file(&path, &mut store));
+        assert_eq!(store.aggregate().status, "working");
+
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(
+            f,
+            "{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_complete\"}}}}"
+        )
+        .unwrap();
+
+        assert!(watcher.tail_file(&path, &mut store));
+        assert_eq!(store.aggregate().status, "idle");
+
+        let _ = std::fs::remove_file(&path);
     }
 }

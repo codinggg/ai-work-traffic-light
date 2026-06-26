@@ -143,6 +143,10 @@ fn apply_effective(app: &AppHandle, shared: &Shared, real: Aggregate) {
         if effective.status == "none" {
             let _ = win.hide();
         } else {
+            let vertical = shared
+                .vertical_layout
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let _ = crate::resize_light_window(&win, shared, vertical);
             // 仅首次显示时自动定位；之后保留用户拖动后的位置。
             if !shared.positioned.swap(true, Ordering::Relaxed) {
                 crate::platform::place_window(&win);
