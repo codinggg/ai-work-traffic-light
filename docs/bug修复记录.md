@@ -76,3 +76,12 @@ API Error: Request rejected (429) · Service Unavailable
 增加对antigravity ide 和antigravity 的hooks才行
 
 看下这个项目也要支持codex的支持，刚看了下hooks没有发现codex，你看修复下，看下代码里是否也要修改支持codex
+
+
+增加触发hook调用的调试信息
+
+如果系统没有启动vscode， codex， antigravity就隐藏红绿灯，只有点击托盘图标才会显示
+
+托盘图标右键的锁定位置下面，增加一个切换竖的红绿灯样式的功能，有的人喜欢横的红绿灯，有的人喜欢竖的，这个配置也保存config，启动加载
+
+在vs code中使用codex的时候，红绿灯不会亮起，帮我解决下

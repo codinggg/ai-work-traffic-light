@@ -28,6 +28,10 @@
   var currentStatus = "none";
   var currentFocused = false;
 
+  function applyLayout(vertical) {
+    widget.classList.toggle("is-vertical", !!vertical);
+  }
+
   function updateAck() {
     if (currentFocused) {
       widget.classList.add("is-ack");
@@ -82,7 +86,7 @@
   }
 
   // 暴露给后端/调试调用。
-  window.TrafficLight = { applyState: applyState };
+  window.TrafficLight = { applyState: applyState, applyLayout: applyLayout };
 
   // 演示模式仅在显式 ?demo 时开启；真实 app 永不进入演示
   // (否则深色底 + 演示面板会露出来，看起来像"黑框")。
@@ -119,6 +123,12 @@
       T.event.listen("state-changed", function (evt) {
         applyState(evt && evt.payload ? evt.payload : { status: "none" });
       });
+      T.event.listen("layout-changed", function (evt) {
+        applyLayout(!!(evt && evt.payload));
+      });
+      if (T.core && typeof T.core.invoke === "function") {
+        T.core.invoke("get_light_layout").then(applyLayout).catch(function () {});
+      }
       // 后端检测到前台是工作窗口(VSCode/终端/Claude)时 payload=true -> 灯常亮(停闪)；
       // 否则 false -> 红/黄灯恢复闪烁提醒。绿灯本来就不闪。
       // 需求：黄灯闪烁之后，如果切换到活动窗口后，就停止闪烁，切换其他窗口也不闪烁。

@@ -247,11 +247,12 @@ pub fn preview_sound(value: &str) {
     play_sound(false, Some(value));
 }
 
-/// 诊断：把收到的 hook 事件追加到 exe 同目录的 events.log，带毫秒时间戳与结果状态。
-/// 用于排查"某操作灯色不对"——能看清到底触发了哪些事件、顺序与间隔（例如权限弹窗
-/// 出现时是否真的有 Notification 事件）。超过 256KB 自动清空，避免无限增长。
-/// 这是临时诊断功能，问题定位后可移除。
+/// 诊断：每个收到的 hook 事件都打到 stderr(dev 控制台可见) + 追加到 exe 同目录 events.log。
+/// 用于排查"某操作灯色不对"——看清到底触发了哪些 hook、顺序与间隔（例如权限弹窗出现时
+/// 有没有 PermissionRequest 事件）。超过 256KB 自动清空，避免无限增长。临时诊断，定位后可移除。
 fn log_event(event: &str, session_id: &str, status: &str) {
+    // 实时打到 stderr —— 跑 `pnpm tauri dev` 时控制台直接能看到每个 hook 触发。
+    eprintln!("[traffic-light][hook] {event} session={session_id} -> {status}");
     use std::io::Write;
     let Some(path) = crate::config::debug_log_path() else {
         return;

@@ -31,6 +31,7 @@ pub struct Shared {
     pub last_status: Mutex<String>,
     pub sound_enabled: AtomicBool,
     pub locked: AtomicBool,
+    pub vertical_layout: AtomicBool,
     pub positioned: AtomicBool,
     pub manual_show: AtomicBool,
     /// 最近一次窗口位置(物理像素)；窗口 Moved 时更新，定时器节流落盘到 config.json。
@@ -45,6 +46,7 @@ fn persist(shared: &Shared) {
     config::save(&config::Config {
         sound_enabled: shared.sound_enabled.load(Ordering::Relaxed),
         locked: shared.locked.load(Ordering::Relaxed),
+        vertical_layout: shared.vertical_layout.load(Ordering::Relaxed),
         pos: *shared.last_pos.lock().unwrap(),
         sound_file: shared.sound_file.lock().unwrap().clone(),
         sound_urgent_file: shared.sound_urgent_file.lock().unwrap().clone(),
@@ -69,7 +71,7 @@ fn about_body() -> String {
         "AI 工作红绿灯 (AI Work Traffic Light)\n\
          版本 {ver}\n\
          \n\
-         用红绿灯显示 Claude Code 的工作状态，需要你时及时提醒：\n\
+         用红绿灯显示 Claude Code，codex，antigravity 的工作状态，需要你时及时提醒：\n\
          🟢 工作中　🟡 该你了　🔴 等你确认\n\
          \n\
          作者：alex\n\
@@ -89,6 +91,44 @@ fn show_about(app: &AppHandle) {
 
 /// 托盘"锁定位置"勾选项句柄（放入 managed state，供命令同步勾选态）。
 struct LockToggle(tauri::menu::CheckMenuItem<tauri::Wry>);
+
+const HORIZONTAL_SIZE: (u32, u32) = (220, 80);
+const VERTICAL_SIZE: (u32, u32) = (100, 220);
+
+fn light_size(vertical: bool) -> tauri::PhysicalSize<u32> {
+    let (width, height) = if vertical {
+        VERTICAL_SIZE
+    } else {
+        HORIZONTAL_SIZE
+    };
+    tauri::PhysicalSize::new(width, height)
+}
+
+fn apply_light_layout(app: &AppHandle, shared: &Shared, vertical: bool, keep_bottom: bool) {
+    let previous = shared.vertical_layout.swap(vertical, Ordering::Relaxed);
+    let size = light_size(vertical);
+    let _ = app.emit("layout-changed", vertical);
+
+    if let Some(win) = app.get_webview_window("light") {
+        let old_size = win.outer_size().ok();
+        let old_pos = win.outer_position().ok();
+        let _ = win.set_size(tauri::Size::Physical(size));
+
+        if keep_bottom && previous != vertical {
+            if let (Some(old_size), Some(old_pos)) = (old_size, old_pos) {
+                let y = (old_pos.y + old_size.height as i32 - size.height as i32).max(0);
+                let pos = tauri::PhysicalPosition::new(old_pos.x, y);
+                let _ = win.set_position(pos);
+                *shared.last_pos.lock().unwrap() = Some((pos.x, pos.y));
+            }
+        }
+    }
+}
+
+#[tauri::command]
+fn get_light_layout(shared: tauri::State<'_, Arc<Shared>>) -> bool {
+    shared.vertical_layout.load(Ordering::Relaxed)
+}
 
 /// 前端右键灯调用：锁定/解锁。锁定 = 窗口点击穿透、不可选中/拖动。
 #[tauri::command]
@@ -115,7 +155,7 @@ fn main() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None::<Vec<&str>>,
         ))
-        .invoke_handler(tauri::generate_handler![set_locked])
+        .invoke_handler(tauri::generate_handler![set_locked, get_light_layout])
         .setup(|app| {
             use tauri_plugin_autostart::ManagerExt;
 
@@ -132,6 +172,7 @@ fn main() {
                 last_status: Mutex::new("none".to_string()),
                 sound_enabled: AtomicBool::new(cfg.sound_enabled),
                 locked: AtomicBool::new(cfg.locked),
+                vertical_layout: AtomicBool::new(cfg.vertical_layout),
                 positioned: AtomicBool::new(false),
                 // 启动即显示灯：manual_show 默认开，无会话时也以 neutral 灰态常驻。
                 manual_show: AtomicBool::new(true),
@@ -180,6 +221,14 @@ fn main() {
                 shared.locked.load(Ordering::Relaxed),
                 None::<&str>,
             )?;
+            let vertical_item = CheckMenuItem::with_id(
+                app,
+                "toggle_vertical_layout",
+                "竖向红绿灯",
+                true,
+                shared.vertical_layout.load(Ordering::Relaxed),
+                None::<&str>,
+            )?;
             let install =
                 MenuItem::with_id(app, "install_hooks", "安装 hooks", true, None::<&str>)?;
             let uninstall =
@@ -196,6 +245,7 @@ fn main() {
                     &sound_menu,
                     &autostart_item,
                     &lock_item,
+                    &vertical_item,
                     &sep1,
                     &install,
                     &uninstall,
@@ -212,6 +262,7 @@ fn main() {
             let sound_check = sound_item.clone();
             let autostart_check = autostart_item.clone();
             let lock_check = lock_item.clone();
+            let vertical_check = vertical_item.clone();
             let shared_tray = shared.clone();
 
             let _tray = TrayIconBuilder::new()
@@ -255,6 +306,11 @@ fn main() {
                             let _ = win.set_ignore_cursor_events(next);
                         }
                         let _ = lock_check.set_checked(next);
+                        persist(&shared_menu);
+                    } else if id == "toggle_vertical_layout" {
+                        let next = !shared_menu.vertical_layout.load(Ordering::Relaxed);
+                        apply_light_layout(app, &shared_menu, next, true);
+                        let _ = vertical_check.set_checked(next);
                         persist(&shared_menu);
                     } else if id == "pick_sound" || id == "pick_sound_urgent" {
                         // 弹文件框选 .wav；选完写入配置并试听一次。
@@ -303,6 +359,8 @@ fn main() {
             // 供前端 set_locked 命令使用的 managed state。
             app.manage(shared.clone());
             app.manage(LockToggle(lock_item.clone()));
+
+            apply_light_layout(app.handle(), &shared, cfg.vertical_layout, false);
 
             // 启动时：应用恢复的锁定态、还原上次窗口位置，并监听拖动以记录新位置。
             if let Some(win) = app.get_webview_window("light") {

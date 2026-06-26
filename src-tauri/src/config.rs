@@ -15,6 +15,7 @@ use std::path::PathBuf;
 pub struct Config {
     pub sound_enabled: bool,
     pub locked: bool,
+    pub vertical_layout: bool,
     /// 窗口位置(物理像素) (x, y)；None 表示还没存过 -> 首次显示时自动贴任务栏。
     pub pos: Option<(i32, i32)>,
     /// 自定义提示音：普通状态切换(绿/黄)用。存 audio/ 下的文件名(如 "ding.wav")，
@@ -29,6 +30,7 @@ impl Default for Config {
         Self {
             sound_enabled: true,
             locked: false,
+            vertical_layout: false,
             pos: None,
             sound_file: None,
             sound_urgent_file: None,

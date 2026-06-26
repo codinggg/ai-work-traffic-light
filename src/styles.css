@@ -57,6 +57,15 @@ body {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
 }
 
+.widget.is-vertical {
+  padding: 6px 8px;
+}
+
+.widget.is-vertical .housing {
+  flex-direction: column;
+  padding: 6px 8px;
+}
+
 /* 灯：默认用浅色(--off)，亮起时用深色(--on)+光晕 */
 .lamp {
   position: relative;
