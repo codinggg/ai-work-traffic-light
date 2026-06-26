@@ -18,6 +18,9 @@ use crate::Shared;
 /// 避免「该你了」黄灯永久卡住。想调就改这里。
 const CODEX_IDLE_TIMEOUT_SECS: u64 = 600;
 
+/// Antigravity 会话闲置超时（10 分钟）清理
+const ANTIGRAVITY_IDLE_TIMEOUT_SECS: u64 = 600;
+
 pub fn start(app: AppHandle, shared: Arc<Shared>, port: u16) {
     // transcript 轮询线程：hooks 不会在 API 报错(如 429)时触发，但错误会写进会话
     // transcript。每 ~1.5s 读各活跃会话 transcript 的新增内容，发现 API 错误就把该
@@ -28,17 +31,22 @@ pub fn start(app: AppHandle, shared: Arc<Shared>, port: u16) {
         let shared = shared.clone();
         std::thread::spawn(move || {
             let mut codex = crate::codex::CodexWatcher::new();
+            let mut antigravity = crate::antigravity::AntigravityWatcher::new();
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(1500));
                 let changed = {
                     let mut store = shared.store.lock().unwrap();
                     let err = store.scan_api_errors();
                     let cdx = codex.poll(&mut store);
+                    let anti = antigravity.poll(&mut store);
                     let expired = store.expire(
                         "codex:",
                         std::time::Duration::from_secs(CODEX_IDLE_TIMEOUT_SECS),
+                    ) || store.expire(
+                        "antigravity:",
+                        std::time::Duration::from_secs(ANTIGRAVITY_IDLE_TIMEOUT_SECS),
                     );
-                    err || cdx || expired
+                    err || cdx || anti || expired
                 };
                 if changed {
                     let agg = shared.store.lock().unwrap().aggregate();
@@ -135,6 +143,10 @@ fn apply_effective(app: &AppHandle, shared: &Shared, real: Aggregate) {
         if effective.status == "none" {
             let _ = win.hide();
         } else {
+            let vertical = shared
+                .vertical_layout
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let _ = crate::resize_light_window(&win, shared, vertical);
             // 仅首次显示时自动定位；之后保留用户拖动后的位置。
             if !shared.positioned.swap(true, Ordering::Relaxed) {
                 crate::platform::place_window(&win);
@@ -239,11 +251,12 @@ pub fn preview_sound(value: &str) {
     play_sound(false, Some(value));
 }
 
-/// 诊断：把收到的 hook 事件追加到 exe 同目录的 events.log，带毫秒时间戳与结果状态。
-/// 用于排查"某操作灯色不对"——能看清到底触发了哪些事件、顺序与间隔（例如权限弹窗
-/// 出现时是否真的有 Notification 事件）。超过 256KB 自动清空，避免无限增长。
-/// 这是临时诊断功能，问题定位后可移除。
+/// 诊断：每个收到的 hook 事件都打到 stderr(dev 控制台可见) + 追加到 exe 同目录 events.log。
+/// 用于排查"某操作灯色不对"——看清到底触发了哪些 hook、顺序与间隔（例如权限弹窗出现时
+/// 有没有 PermissionRequest 事件）。超过 256KB 自动清空，避免无限增长。临时诊断，定位后可移除。
 fn log_event(event: &str, session_id: &str, status: &str) {
+    // 实时打到 stderr —— 跑 `pnpm tauri dev` 时控制台直接能看到每个 hook 触发。
+    eprintln!("[traffic-light][hook] {event} session={session_id} -> {status}");
     use std::io::Write;
     let Some(path) = crate::config::debug_log_path() else {
         return;

@@ -4,6 +4,7 @@
 
 :root {
   --lamp-size: 25px;
+  --traffic-scale: 1;
   --label-bg: rgba(20, 22, 27, 0.82);
   --label-fg: #e6edf3;
   /* 提醒灯(红/黄)的闪烁周期 = 一次"亮 + 灭(回到灯的初始样式)"的总时长。
@@ -19,6 +20,8 @@ html,
 body {
   margin: 0;
   padding: 0;
+  width: 100%;
+  height: 100%;
   background: transparent; /* Tauri 窗口透明，只露出黑色外壳 */
   font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
   overflow: hidden;
@@ -28,12 +31,14 @@ body {
 
 /* 容器填满整个(透明)窗口，整窗可拖；外壳+标签靠左 */
 .widget {
+  --lamp-size: calc(25px * var(--traffic-scale));
   display: flex;
   align-items: center;
-  gap: 7px;
+  justify-content: center;
+  gap: 0;
   width: 100%;
   height: 100%;
-  padding: 0 8px;
+  padding: 0;
   cursor: default;
   transition: opacity 180ms ease, transform 180ms ease;
 }
@@ -49,12 +54,29 @@ body {
 .housing {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 8px 6px;
+  justify-content: center;
+  gap: calc(5px * var(--traffic-scale));
+  width: 100%;
+  height: 100%;
+  padding: calc(3px * var(--traffic-scale)) calc(6px * var(--traffic-scale));
   background: #15171c;
   border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 9px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  border-radius: calc(9px * var(--traffic-scale));
+  box-shadow: none;
+  overflow: hidden;
+}
+
+.widget.is-vertical {
+  --lamp-size: calc(48px * var(--traffic-scale));
+  justify-content: center;
+  padding: 0;
+}
+
+.widget.is-vertical .housing {
+  flex-direction: column;
+  gap: calc(7px * var(--traffic-scale));
+  justify-content: center;
+  padding: calc(3px * var(--traffic-scale)) calc(6px * var(--traffic-scale));
 }
 
 /* 灯：默认用浅色(--off)，亮起时用深色(--on)+光晕 */
@@ -215,13 +237,13 @@ body {
 .widget.is-boot .lamp-red {
   /*            持续时间(亮多久)        延迟时间(何时开始)*/
   /*                     👇              👇        */
-  animation: boot-flash 0.7s ease-in-out 0.5s 1 both;
+  animation: boot-flash 1s ease-in-out 0.5s 1 both;
 }
 .widget.is-boot .lamp-yellow {
-  animation: boot-flash 0.7s ease-in-out 1.2s 1 both;
+  animation: boot-flash 1s ease-in-out 1.5s 1 both;
 }
 .widget.is-boot .lamp-green {
-  animation: boot-flash 0.7s ease-in-out 1.9s 1 both;
+  animation: boot-flash 1s ease-in-out 2.5s 1 both;
 }
 @keyframes boot-flash {
   0%,
@@ -248,23 +270,28 @@ body {
 
 /* 会话标识：红灯(带 label)时出现的小药丸 */
 .label {
+  display: none;
   max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: calc(12px * var(--traffic-scale));
   line-height: 1.4;
   color: var(--label-fg);
   background: var(--label-bg);
-  padding: 1px 8px;
+  padding: calc(1px * var(--traffic-scale)) calc(8px * var(--traffic-scale));
   border-radius: 999px;
   opacity: 0;
   transform: translateX(-4px);
   transition: opacity 180ms ease, transform 180ms ease;
 }
 .widget.has-label .label {
+  display: none;
   opacity: 1;
   transform: translateX(0);
+}
+.widget.is-vertical.has-label .label {
+  display: none;
 }
 
 /* ---- 演示控制面板（仅 ?demo） ---- */

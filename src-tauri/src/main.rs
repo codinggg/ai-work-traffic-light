@@ -3,6 +3,7 @@
 // 本地状态端点(U3) + 状态机(U4)，红灯通知(U7)，任务栏定位(U6)。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod antigravity;
 mod codex;
 mod config;
 mod installer;
@@ -13,6 +14,7 @@ mod state;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use serde::Serialize;
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -30,10 +32,13 @@ pub struct Shared {
     pub last_status: Mutex<String>,
     pub sound_enabled: AtomicBool,
     pub locked: AtomicBool,
+    pub vertical_layout: AtomicBool,
     pub positioned: AtomicBool,
     pub manual_show: AtomicBool,
     /// 最近一次窗口位置(物理像素)；窗口 Moved 时更新，定时器节流落盘到 config.json。
     pub last_pos: Mutex<Option<(i32, i32)>>,
+    pub horizontal_size: Mutex<Option<(f64, f64)>>,
+    pub vertical_size: Mutex<Option<(f64, f64)>>,
     /// 自定义提示音(.wav)路径：普通切换用 / 红灯用。可在启动时从配置读入，也可托盘里改。
     pub sound_file: Mutex<Option<String>>,
     pub sound_urgent_file: Mutex<Option<String>>,
@@ -44,7 +49,10 @@ fn persist(shared: &Shared) {
     config::save(&config::Config {
         sound_enabled: shared.sound_enabled.load(Ordering::Relaxed),
         locked: shared.locked.load(Ordering::Relaxed),
+        vertical_layout: shared.vertical_layout.load(Ordering::Relaxed),
         pos: *shared.last_pos.lock().unwrap(),
+        horizontal_size: *shared.horizontal_size.lock().unwrap(),
+        vertical_size: *shared.vertical_size.lock().unwrap(),
         sound_file: shared.sound_file.lock().unwrap().clone(),
         sound_urgent_file: shared.sound_urgent_file.lock().unwrap().clone(),
     });
@@ -68,7 +76,7 @@ fn about_body() -> String {
         "AI 工作红绿灯 (AI Work Traffic Light)\n\
          版本 {ver}\n\
          \n\
-         用红绿灯显示 Claude Code 的工作状态，需要你时及时提醒：\n\
+         用红绿灯显示 Claude Code，codex，antigravity 的工作状态，需要你时及时提醒：\n\
          🟢 工作中　🟡 该你了　🔴 等你确认\n\
          \n\
          作者：alex\n\
@@ -89,6 +97,197 @@ fn show_about(app: &AppHandle) {
 /// 托盘"锁定位置"勾选项句柄（放入 managed state，供命令同步勾选态）。
 struct LockToggle(tauri::menu::CheckMenuItem<tauri::Wry>);
 
+const HORIZONTAL_SIZE: (f64, f64) = (99.0, 33.0);
+const VERTICAL_SIZE: (f64, f64) = (62.0, 166.0);
+const OLD_HORIZONTAL_SIZE: (f64, f64) = (205.0, 80.0);
+const OLD_VERTICAL_SIZE: (f64, f64) = (80.0, 205.0);
+const MIN_SIZE_SCALE: f64 = 0.6;
+const MAX_SIZE_SCALE: f64 = 5.0;
+
+#[derive(Serialize)]
+struct LightWindowGeometry {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+fn size_tuple(vertical: bool) -> (f64, f64) {
+    if vertical {
+        VERTICAL_SIZE
+    } else {
+        HORIZONTAL_SIZE
+    }
+}
+
+fn min_size_tuple(vertical: bool) -> (f64, f64) {
+    let base = size_tuple(vertical);
+    (base.0 * MIN_SIZE_SCALE, base.1 * MIN_SIZE_SCALE)
+}
+
+fn normalize_light_size(vertical: bool, size: (f64, f64)) -> (f64, f64) {
+    let fallback = size_tuple(vertical);
+    if !size.0.is_finite() || !size.1.is_finite() {
+        return fallback;
+    }
+
+    let old_default = if vertical {
+        OLD_VERTICAL_SIZE
+    } else {
+        OLD_HORIZONTAL_SIZE
+    };
+    if (size.0 - old_default.0).abs() < 1.0 && (size.1 - old_default.1).abs() < 1.0 {
+        return fallback;
+    }
+
+    let scale = (size.0 / fallback.0)
+        .min(size.1 / fallback.1)
+        .clamp(MIN_SIZE_SCALE, MAX_SIZE_SCALE);
+    (fallback.0 * scale, fallback.1 * scale)
+}
+
+fn stored_light_size(shared: &Shared, vertical: bool) -> Option<(f64, f64)> {
+    if vertical {
+        *shared.vertical_size.lock().unwrap()
+    } else {
+        *shared.horizontal_size.lock().unwrap()
+    }
+}
+
+fn set_stored_light_size(shared: &Shared, vertical: bool, size: (f64, f64)) {
+    let size = normalize_light_size(vertical, size);
+    if vertical {
+        *shared.vertical_size.lock().unwrap() = Some(size);
+    } else {
+        *shared.horizontal_size.lock().unwrap() = Some(size);
+    }
+}
+
+fn current_light_size(shared: &Shared, vertical: bool) -> tauri::LogicalSize<f64> {
+    let (width, height) = stored_light_size(shared, vertical)
+        .map(|size| normalize_light_size(vertical, size))
+        .unwrap_or_else(|| size_tuple(vertical));
+    tauri::LogicalSize::new(width, height)
+}
+
+pub(crate) fn resize_light_window(
+    win: &tauri::WebviewWindow<tauri::Wry>,
+    shared: &Shared,
+    vertical: bool,
+) -> tauri::Result<()> {
+    win.set_min_size(Some(tauri::Size::Logical(tauri::LogicalSize::new(
+        min_size_tuple(vertical).0,
+        min_size_tuple(vertical).1,
+    ))))?;
+    win.set_size(tauri::Size::Logical(current_light_size(shared, vertical)))
+}
+
+fn apply_lock_state(win: &tauri::WebviewWindow<tauri::Wry>, locked: bool) {
+    let _ = win.set_ignore_cursor_events(locked);
+    let _ = win.set_resizable(false);
+}
+
+fn apply_light_layout(app: &AppHandle, shared: &Shared, vertical: bool, keep_bottom: bool) {
+    let previous = shared.vertical_layout.swap(vertical, Ordering::Relaxed);
+
+    if let Some(win) = app.get_webview_window("light") {
+        let old_size = win.outer_size().ok();
+        let old_pos = win.outer_position().ok();
+        let _ = resize_light_window(&win, shared, vertical);
+
+        if keep_bottom && previous != vertical {
+            if let (Some(old_size), Some(old_pos)) = (old_size, old_pos) {
+                let scale_factor = win.scale_factor().unwrap_or(1.0);
+                let new_size = current_light_size(shared, vertical).to_physical::<u32>(scale_factor);
+                let y = (old_pos.y + old_size.height as i32 - new_size.height as i32).max(0);
+                let pos = tauri::PhysicalPosition::new(old_pos.x, y);
+                let _ = win.set_position(pos);
+                *shared.last_pos.lock().unwrap() = Some((pos.x, pos.y));
+            }
+        }
+    }
+
+    let _ = app.emit("layout-changed", vertical);
+}
+
+#[tauri::command]
+fn get_light_layout(shared: tauri::State<'_, Arc<Shared>>) -> bool {
+    shared.vertical_layout.load(Ordering::Relaxed)
+}
+
+#[tauri::command]
+fn get_locked(shared: tauri::State<'_, Arc<Shared>>) -> bool {
+    shared.locked.load(Ordering::Relaxed)
+}
+
+#[tauri::command]
+fn set_light_layout_size(
+    app: AppHandle,
+    shared: tauri::State<'_, Arc<Shared>>,
+    vertical: bool,
+) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("light") {
+        resize_light_window(&win, &shared, vertical).map_err(|err| err.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn get_light_window_geometry(
+    app: AppHandle,
+    shared: tauri::State<'_, Arc<Shared>>,
+) -> Result<LightWindowGeometry, String> {
+    let Some(win) = app.get_webview_window("light") else {
+        return Err("light window not found".to_string());
+    };
+    let scale_factor = win.scale_factor().map_err(|err| err.to_string())?;
+    let pos = win.outer_position().map_err(|err| err.to_string())?;
+    let size = win.outer_size().map_err(|err| err.to_string())?;
+    let logical_size = size.to_logical::<f64>(scale_factor);
+    let vertical = shared.vertical_layout.load(Ordering::Relaxed);
+    let normalized = normalize_light_size(vertical, (logical_size.width, logical_size.height));
+
+    Ok(LightWindowGeometry {
+        x: pos.x as f64 / scale_factor,
+        y: pos.y as f64 / scale_factor,
+        width: normalized.0,
+        height: normalized.1,
+    })
+}
+
+#[tauri::command]
+fn set_light_window_geometry(
+    app: AppHandle,
+    shared: tauri::State<'_, Arc<Shared>>,
+    vertical: bool,
+    width: f64,
+    height: f64,
+    x: f64,
+    y: f64,
+) -> Result<(), String> {
+    let Some(win) = app.get_webview_window("light") else {
+        return Err("light window not found".to_string());
+    };
+    let size = normalize_light_size(vertical, (width, height));
+    set_stored_light_size(&shared, vertical, size);
+
+    let scale_factor = win.scale_factor().unwrap_or(1.0);
+    let x = if x.is_finite() { x } else { 0.0 };
+    let y = if y.is_finite() { y } else { 0.0 };
+    let pos = tauri::LogicalPosition::new(x, y);
+    let physical_pos = pos.to_physical::<i32>(scale_factor);
+
+    win.set_size(tauri::Size::Logical(tauri::LogicalSize::new(
+        size.0, size.1,
+    )))
+    .map_err(|err| err.to_string())?;
+    win.set_position(tauri::Position::Logical(pos))
+        .map_err(|err| err.to_string())?;
+    *shared.last_pos.lock().unwrap() = Some((physical_pos.x, physical_pos.y));
+
+    Ok(())
+}
+
 /// 前端右键灯调用：锁定/解锁。锁定 = 窗口点击穿透、不可选中/拖动。
 #[tauri::command]
 fn set_locked(
@@ -99,9 +298,10 @@ fn set_locked(
 ) {
     shared.locked.store(locked, Ordering::Relaxed);
     if let Some(win) = app.get_webview_window("light") {
-        let _ = win.set_ignore_cursor_events(locked);
+        apply_lock_state(&win, locked);
     }
     let _ = lock_toggle.0.set_checked(locked);
+    let _ = app.emit("locked-changed", locked);
     persist(&shared);
 }
 
@@ -114,7 +314,14 @@ fn main() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None::<Vec<&str>>,
         ))
-        .invoke_handler(tauri::generate_handler![set_locked])
+        .invoke_handler(tauri::generate_handler![
+            set_locked,
+            get_light_layout,
+            get_locked,
+            set_light_layout_size,
+            get_light_window_geometry,
+            set_light_window_geometry
+        ])
         .setup(|app| {
             use tauri_plugin_autostart::ManagerExt;
 
@@ -131,10 +338,13 @@ fn main() {
                 last_status: Mutex::new("none".to_string()),
                 sound_enabled: AtomicBool::new(cfg.sound_enabled),
                 locked: AtomicBool::new(cfg.locked),
+                vertical_layout: AtomicBool::new(cfg.vertical_layout),
                 positioned: AtomicBool::new(false),
                 // 启动即显示灯：manual_show 默认开，无会话时也以 neutral 灰态常驻。
                 manual_show: AtomicBool::new(true),
                 last_pos: Mutex::new(cfg.pos),
+                horizontal_size: Mutex::new(cfg.horizontal_size),
+                vertical_size: Mutex::new(cfg.vertical_size),
                 sound_file: Mutex::new(cfg.sound_file.clone()),
                 sound_urgent_file: Mutex::new(cfg.sound_urgent_file.clone()),
             });
@@ -179,6 +389,14 @@ fn main() {
                 shared.locked.load(Ordering::Relaxed),
                 None::<&str>,
             )?;
+            let vertical_item = CheckMenuItem::with_id(
+                app,
+                "toggle_vertical_layout",
+                "竖向红绿灯",
+                true,
+                shared.vertical_layout.load(Ordering::Relaxed),
+                None::<&str>,
+            )?;
             let install =
                 MenuItem::with_id(app, "install_hooks", "安装 hooks", true, None::<&str>)?;
             let uninstall =
@@ -195,6 +413,7 @@ fn main() {
                     &sound_menu,
                     &autostart_item,
                     &lock_item,
+                    &vertical_item,
                     &sep1,
                     &install,
                     &uninstall,
@@ -211,6 +430,7 @@ fn main() {
             let sound_check = sound_item.clone();
             let autostart_check = autostart_item.clone();
             let lock_check = lock_item.clone();
+            let vertical_check = vertical_item.clone();
             let shared_tray = shared.clone();
 
             let _tray = TrayIconBuilder::new()
@@ -251,9 +471,15 @@ fn main() {
                         shared_menu.locked.store(next, Ordering::Relaxed);
                         if let Some(win) = app.get_webview_window("light") {
                             // 锁定 = 点击穿透，不可选中/拖动。
-                            let _ = win.set_ignore_cursor_events(next);
+                            apply_lock_state(&win, next);
                         }
                         let _ = lock_check.set_checked(next);
+                        let _ = app.emit("locked-changed", next);
+                        persist(&shared_menu);
+                    } else if id == "toggle_vertical_layout" {
+                        let next = !shared_menu.vertical_layout.load(Ordering::Relaxed);
+                        apply_light_layout(app, &shared_menu, next, true);
+                        let _ = vertical_check.set_checked(next);
                         persist(&shared_menu);
                     } else if id == "pick_sound" || id == "pick_sound_urgent" {
                         // 弹文件框选 .wav；选完写入配置并试听一次。
@@ -303,20 +529,34 @@ fn main() {
             app.manage(shared.clone());
             app.manage(LockToggle(lock_item.clone()));
 
+            apply_light_layout(app.handle(), &shared, cfg.vertical_layout, false);
+
             // 启动时：应用恢复的锁定态、还原上次窗口位置，并监听拖动以记录新位置。
             if let Some(win) = app.get_webview_window("light") {
-                if shared.locked.load(Ordering::Relaxed) {
-                    let _ = win.set_ignore_cursor_events(true);
-                }
+                apply_lock_state(&win, shared.locked.load(Ordering::Relaxed));
                 if let Some((x, y)) = cfg.pos {
                     let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
                     // 已有保存位置 -> 别再自动贴任务栏，尊重用户上次拖到的位置。
                     shared.positioned.store(true, Ordering::Relaxed);
                 }
                 let shared_move = shared.clone();
+                let win_resize = win.clone();
                 win.on_window_event(move |event| {
-                    if let tauri::WindowEvent::Moved(pos) = event {
-                        *shared_move.last_pos.lock().unwrap() = Some((pos.x, pos.y));
+                    match event {
+                        tauri::WindowEvent::Moved(pos) => {
+                            *shared_move.last_pos.lock().unwrap() = Some((pos.x, pos.y));
+                        }
+                        tauri::WindowEvent::Resized(size) => {
+                            let scale_factor = win_resize.scale_factor().unwrap_or(1.0);
+                            let logical = size.to_logical::<f64>(scale_factor);
+                            let vertical = shared_move.vertical_layout.load(Ordering::Relaxed);
+                            set_stored_light_size(
+                                &shared_move,
+                                vertical,
+                                (logical.width, logical.height),
+                            );
+                        }
+                        _ => {}
                     }
                 });
 
@@ -351,6 +591,8 @@ fn main() {
             {
                 let app_handle = app.handle().clone();
                 let mut saved_pos = *shared_timer.last_pos.lock().unwrap();
+                let mut saved_horizontal_size = *shared_timer.horizontal_size.lock().unwrap();
+                let mut saved_vertical_size = *shared_timer.vertical_size.lock().unwrap();
                 let mut last_ack: Option<bool> = None; // None = 还没通知过前端
                 std::thread::spawn(move || loop {
                     std::thread::sleep(std::time::Duration::from_millis(800));
@@ -379,9 +621,16 @@ fn main() {
                         let _ = app_handle.emit("focus-changed", ack);
                     }
 
-                    let cur = *shared_timer.last_pos.lock().unwrap();
-                    if cur != saved_pos {
-                        saved_pos = cur;
+                    let cur_pos = *shared_timer.last_pos.lock().unwrap();
+                    let cur_horizontal_size = *shared_timer.horizontal_size.lock().unwrap();
+                    let cur_vertical_size = *shared_timer.vertical_size.lock().unwrap();
+                    if cur_pos != saved_pos
+                        || cur_horizontal_size != saved_horizontal_size
+                        || cur_vertical_size != saved_vertical_size
+                    {
+                        saved_pos = cur_pos;
+                        saved_horizontal_size = cur_horizontal_size;
+                        saved_vertical_size = cur_vertical_size;
                         persist(&shared_timer);
                     }
                 });

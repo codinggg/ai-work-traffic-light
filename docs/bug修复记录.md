@@ -72,3 +72,22 @@ API Error: Request rejected (429) · Service Unavailable
 这个问题我看有类似的红绿灯项目 https://github.com/wzp0514/claude-eyes ，你看下里面是怎么实现的
 
 修改下，黄灯闪烁之后，如果切换到活动窗口后，就停止闪烁，切换其他窗口也不闪烁
+
+增加对antigravity ide 和antigravity 的hooks才行
+
+看下这个项目也要支持codex的支持，刚看了下hooks没有发现codex，你看修复下，看下代码里是否也要修改支持codex
+
+
+增加触发hook调用的调试信息
+
+如果系统没有启动vscode， codex， antigravity就隐藏红绿灯，只有点击托盘图标才会显示
+
+托盘图标右键的锁定位置下面，增加一个切换竖的红绿灯样式的功能，有的人喜欢横的红绿灯，有的人喜欢竖的，这个配置也保存config，启动加载
+
+之前都是用claude测试的，现在在vs code中使用codex的时候，红绿灯不会按要求亮起，帮我解决下
+
+鼠标靠近红绿灯，不要显示 ai-work-traffic-light的字
+
+算了，增加个功能，红绿灯默认是现有的大小。在红绿灯没有锁定位置时，鼠标在红绿灯窗口边缘时显示放大缩小的指针，可以调整红绿灯大小，大小调整后也保存到config中，下次打开读取config展示大小。
+
+我看红绿灯框的下面俩个圆角外面有点阴影，灯框外面四个圆角外面应该都是透明的
