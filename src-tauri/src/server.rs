@@ -150,8 +150,12 @@ fn apply_effective(app: &AppHandle, shared: &Shared, real: Aggregate) {
     // 这里立刻算一次消除状态变化时的闪烁延迟；窗口切换则由 main.rs 定时器负责。
     let ack = crate::platform::foreground_matches_window(&effective.source, &effective.session_label);
     let _ = app.emit("focus-changed", ack);
+    // 记录当前显示状态/已查看，供极简模式的托盘动画线程取用。
+    *shared.cur_status.lock().unwrap() = effective.status.clone();
+    shared.cur_ack.store(ack, Ordering::Relaxed);
     if let Some(win) = app.get_webview_window("light") {
-        if effective.status == "none" {
+        // 极简模式：不显示桌面灯，状态全靠托盘图标 -> 这里一律隐藏窗口。
+        if effective.status == "none" || shared.minimal.load(Ordering::Relaxed) {
             let _ = win.hide();
         } else {
             let vertical = shared

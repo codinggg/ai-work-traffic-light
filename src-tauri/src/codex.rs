@@ -136,52 +136,80 @@ impl CodexWatcher {
             return false;
         }
 
+        // 首次见到该文件：扫描最近内容，只取【最后一个 task 事件】和 cwd —— 不逐个回放历史，
+        // 否则会把早已完成的旧会话当成"刚结束"显示红灯（启动就闪红）。
         let start = len.saturating_sub(INITIAL_SCAN_BYTES);
-        let mut changed = false;
+        let mut last: Option<&'static str> = None;
+        let mut cwd: Option<String> = None;
         if start > 0 {
-            changed |= self.read_and_apply(path, 0, len.min(INITIAL_HEAD_BYTES), store, false);
+            let (l, c) = self.scan_state(path, 0, len.min(INITIAL_HEAD_BYTES), false);
+            last = l.or(last);
+            cwd = c.or(cwd);
         }
-        changed |= self.read_and_apply(path, start, len, store, start > 0);
-        self.offsets.entry(path.to_path_buf()).or_insert(len);
-        changed
+        let (l, c) = self.scan_state(path, start, len, start > 0);
+        last = l.or(last);
+        cwd = c.or(cwd);
+
+        self.offsets.insert(path.to_path_buf(), len);
+        if let Some(c) = cwd {
+            self.cwds.insert(path.to_path_buf(), c);
+        }
+
+        // 仅当 Codex 当前【正在干活】(最后一个事件是 task_started)才在启动时显示绿灯；
+        // 历史上已完成(task_complete)的旧会话不在启动时亮红。
+        if last == Some("task_started") {
+            let session = session_key(path);
+            let cwd = self.cwds.get(path).map(|s| s.as_str());
+            store.apply("PreToolUse", &session, cwd);
+            store.touch(&session);
+            return true;
+        }
+        false
     }
 
-    fn read_and_apply(
-        &mut self,
+    /// 扫描文件 [start,len) 区间，返回该段里【最后一个 task 事件】与【最后一个 cwd】(不写状态机)。
+    /// 用于启动 catch_up：判断 Codex 当前到底在不在干活，而不回放历史完成事件。
+    fn scan_state(
+        &self,
         path: &Path,
         start: u64,
         len: u64,
-        store: &mut Store,
         drop_first_partial_line: bool,
-    ) -> bool {
+    ) -> (Option<&'static str>, Option<String>) {
         use std::io::{Read, Seek, SeekFrom};
+        let mut last: Option<&'static str> = None;
+        let mut cwd: Option<String> = None;
         let Ok(mut f) = std::fs::File::open(path) else {
-            return false;
+            return (last, cwd);
         };
         if f.seek(SeekFrom::Start(start)).is_err() {
-            return false;
+            return (last, cwd);
         }
         let mut bytes = Vec::new();
         if f.take(len - start).read_to_end(&mut bytes).is_err() {
-            return false;
+            return (last, cwd);
         }
         let buf = String::from_utf8_lossy(&bytes);
         let consume = buf.rfind('\n').map(|i| i + 1).unwrap_or(0);
         if consume == 0 {
-            return false;
+            return (last, cwd);
         }
-        self.offsets
-            .insert(path.to_path_buf(), start + consume as u64);
-
         let mut lines = &buf[..consume];
         if drop_first_partial_line {
-            let Some(first_newline) = lines.find('\n') else {
-                return false;
+            let Some(nl) = lines.find('\n') else {
+                return (last, cwd);
             };
-            lines = &lines[first_newline + 1..];
+            lines = &lines[nl + 1..];
         }
-
-        self.apply_lines(path, lines, store)
+        for line in lines.lines() {
+            if let Some(c) = extract_cwd(line) {
+                cwd = Some(c);
+            }
+            if let Some(e) = codex_event(line) {
+                last = Some(e);
+            }
+        }
+        (last, cwd)
     }
 
     /// 处理一段(新增的)rollout 文本：抓 cwd 持久记住，识别 task_started/complete 喂状态机。
@@ -416,6 +444,33 @@ mod tests {
 
         assert!(watcher.tail_file(&path, &mut store));
         assert_eq!(store.aggregate().status, "blocked"); // task_complete=一轮结束 -> 红灯
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn first_seen_completed_file_does_not_alert() {
+        // 启动时遇到一个已完成(最后是 task_complete)的旧 rollout：不应回放历史亮红灯。
+        use std::io::Write;
+        let path = std::env::temp_dir().join(format!(
+            "aiwtl_codex_done_{}.jsonl",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, "{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\"}}}}").unwrap();
+        writeln!(f, "{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_complete\"}}}}").unwrap();
+        drop(f);
+
+        let mut watcher = CodexWatcher {
+            sessions_dir: None,
+            offsets: HashMap::new(),
+            cwds: HashMap::new(),
+        };
+        let mut store = Store::default();
+        // 首次见到(catch_up)：最后是 task_complete -> 不显示 -> 状态 none，不亮红。
+        assert!(!watcher.tail_file(&path, &mut store));
+        assert_eq!(store.aggregate().status, "none");
 
         let _ = std::fs::remove_file(&path);
     }
