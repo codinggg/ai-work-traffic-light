@@ -24,6 +24,9 @@ use tauri::{
 /// Claude Code 的 hook 把事件 POST 到这个本地端口（U3 监听 / U5 安装器写入）。
 pub const STATE_PORT: u16 = 48756;
 
+/// 红灯(一轮结束)在你切到对应窗口、常亮这么多秒后自动熄灭(隐藏)，直到下一轮。
+const RED_AUTO_OFF_SECS: u64 = 5;
+
 /// 跨线程共享状态：会话状态机 + 上次聚合状态(红灯进入检测) + 声音开关
 /// + 位置锁定 + 是否已自动定位过(避免每次显示都把用户拖动的位置拽回去)
 /// + 最近窗口位置(用于持久化)。
@@ -42,6 +45,9 @@ pub struct Shared {
     /// 自定义提示音(.wav)路径：普通切换用 / 红灯用。可在启动时从配置读入，也可托盘里改。
     pub sound_file: Mutex<Option<String>>,
     pub sound_urgent_file: Mutex<Option<String>>,
+    /// 红灯(一轮结束)被你切到窗口看过、常亮 RED_AUTO_OFF_SECS 秒后置位 -> 灯隐藏；
+    /// 收到下一个 hook 事件即清零，重新显示。
+    pub auto_off: AtomicBool,
 }
 
 /// 把当前可持久化设置(提示音/锁定/位置/自定义音)写回 exe 同目录的 config.json。
@@ -77,7 +83,7 @@ fn about_body() -> String {
          版本 {ver}\n\
          \n\
          用红绿灯显示 Claude Code，codex，antigravity 的工作状态，需要你时及时提醒：\n\
-         🟢 工作中　🟡 该你了　🔴 等你确认\n\
+         🟢 工作中　🟡 等你确认/选择　🔴 一轮结束(该你了)\n\
          \n\
          作者：alex\n\
          技术：Tauri (Rust) + Claude Code hooks",
@@ -347,6 +353,7 @@ fn main() {
                 vertical_size: Mutex::new(cfg.vertical_size),
                 sound_file: Mutex::new(cfg.sound_file.clone()),
                 sound_urgent_file: Mutex::new(cfg.sound_urgent_file.clone()),
+                auto_off: AtomicBool::new(false),
             });
 
             // 托盘菜单：提示音(子菜单) / 开机自启(勾选) + 安装/卸载 hooks + 退出。
@@ -448,6 +455,8 @@ fn main() {
                     {
                         let next = !shared_tray.manual_show.load(Ordering::Relaxed);
                         shared_tray.manual_show.store(next, Ordering::Relaxed);
+                        // 用户主动召唤 -> 清掉自动灭标记，确保能显示。
+                        shared_tray.auto_off.store(false, Ordering::Relaxed);
                         server::refresh(tray.app_handle(), &shared_tray);
                     }
                 })
@@ -594,6 +603,7 @@ fn main() {
                 let mut saved_horizontal_size = *shared_timer.horizontal_size.lock().unwrap();
                 let mut saved_vertical_size = *shared_timer.vertical_size.lock().unwrap();
                 let mut last_ack: Option<bool> = None; // None = 还没通知过前端
+                let mut red_focus_since: Option<std::time::Instant> = None; // 红灯被聚焦的起点
                 std::thread::spawn(move || loop {
                     std::thread::sleep(std::time::Duration::from_millis(800));
 
@@ -606,19 +616,41 @@ fn main() {
 
                     // "精确到窗口"的停闪：取当前在催你的来源(claude/codex)，
                     // 只有前台是该来源对应的窗口才算已查看(常亮 is-ack)，否则继续闪。
-                    let source = shared_timer.store.lock().unwrap().aggregate().source;
-                    let ack = platform::foreground_matches_source(&source);
+                    let agg = shared_timer.store.lock().unwrap().aggregate();
+                    let ack = platform::foreground_matches_window(&agg.source, &agg.session_label);
                     if last_ack != Some(ack) {
                         last_ack = Some(ack);
-                        // 开发模式打印：看清前台进程名 + 来源 + 是否已查看（排查灯闪/常亮）。
+                        // 开发模式打印：前台进程名 + 标题 + 来源 + 项目 + 是否已查看（排查多窗口停闪）。
                         #[cfg(debug_assertions)]
                         eprintln!(
-                            "[traffic-light] 焦点变化: 前台={:?} 来源={:?} 已查看={}",
+                            "[traffic-light] 焦点变化: 前台={:?} 标题={:?} 来源={:?} 项目={:?} 已查看={}",
                             platform::foreground_token(),
-                            source,
+                            platform::foreground_title(),
+                            agg.source,
+                            agg.session_label,
                             ack
                         );
                         let _ = app_handle.emit("focus-changed", ack);
+                    }
+
+                    // 红灯(一轮结束)自动灭：你切到对应窗口(ack)、红灯常亮 RED_AUTO_OFF_SECS 秒后
+                    // 隐藏灯；没切过去就一直闪不熄。收到下一个 hook 事件会清零 auto_off 重新显示。
+                    if agg.status == "blocked" && ack {
+                        match red_focus_since {
+                            None => red_focus_since = Some(std::time::Instant::now()),
+                            Some(t) => {
+                                if t.elapsed() >= std::time::Duration::from_secs(RED_AUTO_OFF_SECS)
+                                    && !shared_timer.auto_off.load(Ordering::Relaxed)
+                                {
+                                    shared_timer.auto_off.store(true, Ordering::Relaxed);
+                                    // 灯灭=只剩外壳不亮灯(neutral)：刷新一次让 apply_effective 切到 neutral。
+                                    server::refresh(&app_handle, &shared_timer);
+                                    red_focus_since = None;
+                                }
+                            }
+                        }
+                    } else {
+                        red_focus_since = None;
                     }
 
                     let cur_pos = *shared_timer.last_pos.lock().unwrap();

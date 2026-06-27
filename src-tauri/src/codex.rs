@@ -22,6 +22,9 @@ const INITIAL_SCAN_BYTES: u64 = 1024 * 1024;
 pub struct CodexWatcher {
     sessions_dir: Option<PathBuf>,
     offsets: HashMap<PathBuf, u64>,
+    /// 每个 rollout 文件已知的工作目录(cwd)：从 session_meta/turn_context 行抓到后持久记住，
+    /// 供后续(常落在别的 poll chunk 里的)task 事件设项目名(cwd 末段)用。
+    cwds: HashMap<PathBuf, String>,
 }
 
 impl Default for CodexWatcher {
@@ -38,6 +41,7 @@ impl CodexWatcher {
         Self {
             sessions_dir: dir,
             offsets: HashMap::new(),
+            cwds: HashMap::new(),
         }
     }
 
@@ -110,24 +114,7 @@ impl CodexWatcher {
         }
         self.offsets.insert(path.to_path_buf(), start + consume as u64);
 
-        let session = session_key(path);
-        let mut changed = false;
-        for line in buf[..consume].lines() {
-            match codex_event(line) {
-                Some("task_started") => {
-                    store.apply("PreToolUse", &session, None); // -> working(绿)
-                    changed = true;
-                }
-                Some("task_complete") => {
-                    store.apply("Stop", &session, None); // -> idle(黄)
-                    changed = true;
-                }
-                _ => {}
-            }
-        }
-        // 有任何新增行就刷新该会话活跃时间，避免长任务(久未 complete)被 expire 误清。
-        store.touch(&session);
-        changed
+        self.apply_lines(path, &buf[..consume], store)
     }
 
     fn catch_up_recent_file(
@@ -194,7 +181,38 @@ impl CodexWatcher {
             lines = &lines[first_newline + 1..];
         }
 
-        apply_codex_events(lines, store, &session_key(path))
+        self.apply_lines(path, lines, store)
+    }
+
+    /// 处理一段(新增的)rollout 文本：抓 cwd 持久记住，识别 task_started/complete 喂状态机。
+    /// cwd 跨 poll 持久化(self.cwds)——一个 turn 里 cwd 行(turn_context)和 task 行常落在不同的
+    /// poll chunk，必须记住才能给 task 事件带上正确项目名(cwd 末段)。
+    fn apply_lines(&mut self, path: &Path, lines: &str, store: &mut Store) -> bool {
+        let session = session_key(path);
+        let mut changed = false;
+        for line in lines.lines() {
+            if let Some(c) = extract_cwd(line) {
+                self.cwds.insert(path.to_path_buf(), c);
+            }
+            match codex_event(line) {
+                Some("task_started") => {
+                    let cwd = self.cwds.get(path).map(|s| s.as_str());
+                    eprintln!("[traffic-light][codex] task_started {session} cwd={cwd:?} -> working(绿)");
+                    store.apply("PreToolUse", &session, cwd); // -> working(绿)，带项目名
+                    changed = true;
+                }
+                Some("task_complete") => {
+                    let cwd = self.cwds.get(path).map(|s| s.as_str());
+                    eprintln!("[traffic-light][codex] task_complete {session} cwd={cwd:?} -> blocked(红)");
+                    store.apply("Stop", &session, cwd); // -> 一轮结束(红灯)，带项目名
+                    changed = true;
+                }
+                _ => {}
+            }
+        }
+        // 有任何新增行就刷新该会话活跃时间，避免长任务(久未 complete)被 expire 误清。
+        store.touch(&session);
+        changed
     }
 }
 
@@ -204,23 +222,30 @@ fn session_key(path: &Path) -> String {
     format!("codex:{stem}")
 }
 
-fn apply_codex_events(lines: &str, store: &mut Store, session: &str) -> bool {
-    let mut changed = false;
-    for line in lines.lines() {
-        match codex_event(line) {
-            Some("task_started") => {
-                store.apply("PreToolUse", session, None); // -> working(绿)
-                changed = true;
-            }
-            Some("task_complete") => {
-                store.apply("Stop", session, None); // -> idle(黄)
-                changed = true;
-            }
-            _ => {}
-        }
+/// 从一行 rollout JSON 里取 cwd(工作目录)：session_meta / turn_context 行里有它。
+/// 用它给 Codex 会话设项目名(cwd 末段)，前台标题匹配才认得出对应窗口。
+/// 廉价子串预筛后再解析；递归找第一个 "cwd" 字符串字段(兼容嵌套在 payload 里)。
+fn extract_cwd(line: &str) -> Option<String> {
+    if !line.contains("\"cwd\"") {
+        return None;
     }
-    store.touch(session);
-    changed
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    find_cwd(&value)
+}
+
+fn find_cwd(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::Object(map) => {
+            if let Some(serde_json::Value::String(s)) = map.get("cwd") {
+                if !s.is_empty() {
+                    return Some(s.clone());
+                }
+            }
+            map.values().find_map(find_cwd)
+        }
+        serde_json::Value::Array(arr) => arr.iter().find_map(find_cwd),
+        _ => None,
+    }
 }
 
 /// 一行 rollout JSON 是否是 task_started / task_complete 事件。
@@ -304,6 +329,57 @@ mod tests {
     }
 
     #[test]
+    fn codex_cwd_sets_project_label() {
+        // Codex 的 cwd 在 session_meta/turn_context 行里 -> 应取末段作项目名，红灯才带得上、
+        // 前台标题匹配才认得出对应窗口。
+        let mut w = CodexWatcher {
+            sessions_dir: None,
+            offsets: HashMap::new(),
+            cwds: HashMap::new(),
+        };
+        let path = Path::new("rollout-abc.jsonl");
+        let mut store = Store::default();
+        let lines = concat!(
+            r#"{"type":"session_meta","payload":{"cwd":"D:\\Users\\me\\Documents\\Playground"}}"#,
+            "\n",
+            r#"{"type":"event_msg","payload":{"type":"task_complete"}}"#,
+            "\n",
+        );
+        w.apply_lines(path, lines, &mut store);
+        let agg = store.aggregate();
+        assert_eq!(agg.status, "blocked"); // task_complete -> 红灯
+        assert_eq!(agg.session_label, "Playground"); // 项目名取自 cwd 末段
+        assert_eq!(agg.source, "codex");
+    }
+
+    #[test]
+    fn codex_cwd_persists_across_polls() {
+        // 一个 turn 里 cwd 行和 task 行常落在不同 poll chunk：cwd 必须跨调用持久化。
+        let mut w = CodexWatcher {
+            sessions_dir: None,
+            offsets: HashMap::new(),
+            cwds: HashMap::new(),
+        };
+        let path = Path::new("rollout-xyz.jsonl");
+        let mut store = Store::default();
+        // 第一次 poll：只有 turn_context(带 cwd)，没有 task 事件。
+        w.apply_lines(
+            path,
+            r#"{"type":"turn_context","payload":{"cwd":"/home/u/MyProj"}}"#,
+            &mut store,
+        );
+        // 第二次 poll：task_complete，cwd 行已不在本 chunk -> 应从持久化的 cwds 里取到 MyProj。
+        w.apply_lines(
+            path,
+            r#"{"type":"event_msg","payload":{"type":"task_complete"}}"#,
+            &mut store,
+        );
+        let agg = store.aggregate();
+        assert_eq!(agg.status, "blocked");
+        assert_eq!(agg.session_label, "MyProj");
+    }
+
+    #[test]
     fn first_seen_recent_file_catches_up_current_state() {
         use std::io::Write;
 
@@ -324,6 +400,7 @@ mod tests {
         let mut watcher = CodexWatcher {
             sessions_dir: None,
             offsets: HashMap::new(),
+            cwds: HashMap::new(),
         };
         let mut store = Store::default();
 
@@ -338,7 +415,7 @@ mod tests {
         .unwrap();
 
         assert!(watcher.tail_file(&path, &mut store));
-        assert_eq!(store.aggregate().status, "idle");
+        assert_eq!(store.aggregate().status, "blocked"); // task_complete=一轮结束 -> 红灯
 
         let _ = std::fs::remove_file(&path);
     }

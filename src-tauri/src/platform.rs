@@ -6,22 +6,30 @@
 
 use tauri::WebviewWindow;
 
-/// Claude 的「工作窗口」归一化标识（小写、无 .exe）：编辑器 + 各平台常见终端。
-/// 切到这些窗口 = 你在看 Claude。多余项无害（各平台取超集）。
-const EDITOR_TOKENS: &[&str] = &[
+/// 需【标题含项目名】才算切到那个具体窗口的工作窗口：GUI 编辑器 / IDE。
+/// 它们标题里带工作区/项目名，且常多开窗口，得靠标题区分到底是哪个窗口。
+const TITLE_MATCH_TOKENS: &[&str] = &[
     "code",
     "code - insiders",
     "cursor",
     "windsurf",
-    "claude",
     "antigravity ide",
     "antigravity",
+];
+
+/// 只比【进程名】即算已查看的工作窗口：终端，以及独立的 Codex / Claude Code 桌面应用。
+/// 这些标题不一定含项目名、通常就一个窗口，切到它就算你在看（多个同类窗口无法互相区分，可接受）。
+const PROCESS_ONLY_TOKENS: &[&str] = &[
+    // 独立桌面应用（codex.exe / claude.exe）
+    "claude",
+    "codex",
     // 终端（Windows / macOS / Linux）
     "windowsterminal",
     "wt",
     "powershell",
     "pwsh",
     "cmd",
+    "conhost",
     "terminal",
     "iterm2",
     "wezterm",
@@ -35,17 +43,36 @@ const EDITOR_TOKENS: &[&str] = &[
 ];
 
 
-/// 前台窗口是否是给定来源（"claude"/"codex"）对应的工作窗口。平台无关。
-/// 用于“精确到窗口”的停闪：哪个来源在催你，就得切到它的窗口才算已查看（常亮）。
-pub fn foreground_matches_source(source: &str) -> bool {
+/// 前台窗口是否是「给定来源 + 给定项目(label)」对应的那个工作窗口。平台无关。
+/// 用于"精确到窗口"的停闪。分两类处理：
+/// 只比进程名类(PROCESS_ONLY_TOKENS：终端、独立 Codex/Claude 应用)：切到它就算已查看。
+/// 标题匹配类(TITLE_MATCH_TOKENS：VS Code 等编辑器)：要标题含项目名才算切到那个具体窗口；
+/// label 为空、或取不到标题(如 Wayland)时退化为只比进程名。
+pub fn foreground_matches_window(source: &str, label: &str) -> bool {
     let Some(tok) = foreground_token() else {
         return false;
     };
-    let set: &[&str] = match source {
-        "codex" | "claude" | "antigravity" => EDITOR_TOKENS,
+    match source {
+        "codex" | "claude" | "antigravity" => {}
         _ => return false,
-    };
-    set.contains(&tok.as_str())
+    }
+    let tok = tok.as_str();
+    // 终端 / 独立应用：标题不可靠或就一个窗口 -> 只比进程名，切到它就算已查看。
+    if PROCESS_ONLY_TOKENS.contains(&tok) {
+        return true;
+    }
+    // 编辑器：要标题含项目名才算切到那个具体窗口。
+    if !TITLE_MATCH_TOKENS.contains(&tok) {
+        return false;
+    }
+    let label = label.trim();
+    if label.is_empty() {
+        return true; // 没项目名 -> 只比进程名
+    }
+    match foreground_title() {
+        Some(title) => title.to_lowercase().contains(&label.to_lowercase()),
+        None => true, // 取不到标题 -> 退化为进程名匹配
+    }
 }
 
 /// 归一化进程/应用名：小写 + 去掉结尾 ".exe"。
@@ -75,6 +102,31 @@ pub fn foreground_token() -> Option<String> {
     }
 }
 
+/// 取当前前台窗口的标题文本。用于"精确到窗口"：标题里通常带项目/工作区名，
+/// 据此区分同一个 app(如 VS Code)的多个窗口。取不到返回 None。
+#[cfg(windows)]
+pub fn foreground_title() -> Option<String> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW,
+    };
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.0.is_null() {
+            return None;
+        }
+        let len = GetWindowTextLengthW(hwnd);
+        if len <= 0 {
+            return None;
+        }
+        let mut buf = vec![0u16; (len + 1) as usize];
+        let n = GetWindowTextW(hwnd, &mut buf);
+        if n <= 0 {
+            return None;
+        }
+        Some(String::from_utf16_lossy(&buf[..n as usize]))
+    }
+}
+
 #[cfg(not(windows))]
 pub fn foreground_token() -> Option<String> {
     let win = active_win_pos_rs::get_active_window().ok()?;
@@ -94,6 +146,17 @@ pub fn foreground_token() -> Option<String> {
         None
     } else {
         Some(tok)
+    }
+}
+
+#[cfg(not(windows))]
+pub fn foreground_title() -> Option<String> {
+    let win = active_win_pos_rs::get_active_window().ok()?;
+    let t = win.title.trim().to_string();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t)
     }
 }
 
