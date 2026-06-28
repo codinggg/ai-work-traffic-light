@@ -96,22 +96,10 @@ impl AntigravityWatcher {
         let start = match self.offsets.get(path).copied() {
             Some(p) => p,
             None => {
-                // 首次见到：记录偏移。
+                // 首次见到该文件：只记录当前偏移，【不】凭"最近被改过"就标成 working ——
+                // 否则启动时遇到一个刚结束(transcript 刚写完)的旧会话会先亮绿、再过 15s 超时转红，
+                // 出现"刚启动就闪红"的幻影。真正在活动的会话，下一次轮询看到新增写入即会标 working。
                 self.offsets.insert(path.to_path_buf(), len);
-                
-                // 如果这是刚刚被修改的活跃文件（比如新建的对话），立刻触发绿灯，避免延迟。
-                let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                let is_recent = modified.elapsed().unwrap_or_default().as_secs() < 30;
-                
-                if is_recent {
-                    let session = session_key(path);
-                    if !self.active_sessions.contains(&session) {
-                        store.apply("PreToolUse", &session, None);
-                        self.active_sessions.insert(session.clone());
-                        self.last_update.insert(session, Instant::now());
-                        return true;
-                    }
-                }
                 return false;
             }
         };

@@ -5,12 +5,13 @@
 // 处理的那个会话的标识(取自 cwd 的项目目录名)。
 //
 // 事件→状态映射：
-//   UserPromptSubmit / PreToolUse / PostToolUse / PreCompact      -> working(绿，工作中)
-//   PermissionRequest / Notification / Stop / SubagentStop        -> idle(黄，该你了/闪烁提醒)
-//   SessionEnd                                                    -> 移除该会话
+//   UserPromptSubmit / PreToolUse / PostToolUse / PreCompact  -> working(绿，工作中)
+//   PermissionRequest / Notification                         -> idle(黄，等你确认/选择，闪烁提醒)
+//   Stop / SubagentStop                                      -> blocked(红，一轮结束/该你了，闪烁提醒)
+//   SessionEnd                                               -> 移除该会话
 // 注：PermissionRequest = Claude 弹权限/选择对话框时触发的专用事件(VS Code 下 Notification
-//     不触发，靠它才能检测到"等你确认")，映射到黄灯提醒；/compact 走 PreCompact -> 绿。
-//     blocked(红)暂无触发场景，保留备用。
+//     不触发，靠它才能检测"等你确认")，映射黄灯；Stop = Claude 答完一轮(该你了)，映射红灯更醒目。
+//     红/黄都是闪烁，切到对应窗口后转常亮(同一套 is-ack 机制)；/compact 走 PreCompact -> 绿。
 
 use std::collections::HashMap;
 
@@ -18,9 +19,7 @@ use std::collections::HashMap;
 enum Status {
     Working,
     Idle,
-    /// 红灯(等你确认)。目前无触发场景：Notification 已按需求改为黄灯(idle)。
-    /// 保留枚举与下面的紧急度/标签逻辑，便于将来给某种"硬阻塞"重新启用红灯。
-    #[allow(dead_code)]
+    /// 红灯：Claude 答完一轮(Stop/SubagentStop)，"该你了"。比黄灯更醒目，附带是哪个会话。
     Blocked,
     /// API 报错(如 429 限流/服务不可用)。hooks 不报这个，靠扫 transcript 发现。
     ApiError,
@@ -90,13 +89,26 @@ impl Store {
     /// 应用一个 hook 事件，更新对应会话的状态。
     pub fn apply(&mut self, event: &str, session_id: &str, cwd: Option<&str>) {
         match event {
-            // 弹权限/选择框(PermissionRequest)、请求权限/确认(Notification)、完成这轮(Stop)
-            // 都算"该你了" -> 黄灯闪。PermissionRequest 是 VS Code 下唯一可靠的"等你确认"信号。
-            "PermissionRequest" | "Notification" | "Stop" | "SubagentStop" => {
-                self.set(session_id, Status::Idle, cwd)
+            // 弹权限/选择框(PermissionRequest)、请求权限/确认(Notification) -> 黄灯闪(等你确认)。
+            // PermissionRequest 是 VS Code 下唯一可靠的"等你确认"信号。
+            "PermissionRequest" | "Notification" => self.set(session_id, Status::Idle, cwd),
+            // 答完一轮(Stop/SubagentStop) -> 红灯闪(该你了)，比黄灯更醒目。
+            "Stop" | "SubagentStop" => self.set(session_id, Status::Blocked, cwd),
+            // 用户开始新一轮(UserPromptSubmit) = 人已在场、转向当前会话：先清掉【其它 Claude 会话】
+            // 的"一轮结束红灯"(Blocked)，免得旧会话的红盖住你正在干的新会话(绿)；再把本会话置 working。
+            // 只清同为 Claude 的别的会话：Codex/Antigravity 是独立工具，不动它们的红灯告警；
+            // 也不动 working/黄灯；Stop 不触发清理，故"A 在跑、B 刚结束"这类红灯告警仍会保留。
+            "UserPromptSubmit" => {
+                self.sessions.retain(|id, s| {
+                    id == session_id
+                        || id.starts_with("codex:")
+                        || id.starts_with("antigravity:")
+                        || s.effective() != Status::Blocked
+                });
+                self.set(session_id, Status::Working, cwd);
             }
             // /compact 期间(PreCompact，手动或自动触发)Claude 在压缩上下文 = 工作中 -> 绿。
-            "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PreCompact" => {
+            "PreToolUse" | "PostToolUse" | "PreCompact" => {
                 self.set(session_id, Status::Working, cwd)
             }
             "SessionEnd" => {
@@ -296,18 +308,38 @@ mod tests {
         let mut s = Store::default();
         s.apply("Stop", "codex:rollout-abc", Some("e:/x/foo"));
         let agg = s.aggregate();
-        assert_eq!(agg.status, "idle");
+        assert_eq!(agg.status, "blocked"); // 一轮结束 -> 红灯
         assert_eq!(agg.source, "codex");
     }
 
     #[test]
-    fn idle_beats_working_no_label() {
+    fn stop_is_red_round_done_and_beats_working() {
         let mut s = Store::default();
         s.apply("PreToolUse", "a", Some("/x/foo"));
         s.apply("Stop", "b", Some("/x/bar"));
         let agg = s.aggregate();
-        assert_eq!(agg.status, "idle");
-        assert_eq!(agg.session_label, "");
+        // 一轮结束(Stop) -> 红灯(blocked)，紧急度高于 working 故胜出；红灯附带会话名。
+        assert_eq!(agg.status, "blocked");
+        assert_eq!(agg.session_label, "bar");
+    }
+
+    #[test]
+    fn new_prompt_in_other_session_clears_round_done_red() {
+        let mut s = Store::default();
+        s.apply("Stop", "a", Some("/x/foo")); // A 一轮结束 -> 红灯
+        assert_eq!(s.aggregate().status, "blocked");
+        // 在另一个会话 B 发起新对话 -> 清掉 A 的红灯，显示 B 在工作(绿)
+        s.apply("UserPromptSubmit", "b", Some("/x/bar"));
+        assert_eq!(s.aggregate().status, "working");
+    }
+
+    #[test]
+    fn stop_does_not_clear_other_red_keeps_alert() {
+        // "A 在跑、B 刚结束" 的告警必须保留：Stop 不触发清理(只有 UserPromptSubmit 才清)。
+        let mut s = Store::default();
+        s.apply("PreToolUse", "a", Some("/x/foo")); // A 工作中
+        s.apply("Stop", "b", Some("/x/bar")); // B 结束 -> 红灯
+        assert_eq!(s.aggregate().status, "blocked"); // 红灯(B)压过绿(A)，告警保留
     }
 
     #[test]
@@ -324,8 +356,8 @@ mod tests {
     fn precompact_is_working() {
         let mut s = Store::default();
         s.apply("Stop", "a", Some("/x/foo"));
-        assert_eq!(s.aggregate().status, "idle"); // 完成 -> 黄
-        // /compact 开始压缩上下文(PreCompact) -> 绿(工作中)，不再停在黄。
+        assert_eq!(s.aggregate().status, "blocked"); // 一轮结束 -> 红
+        // /compact 开始压缩上下文(PreCompact) -> 绿(工作中)，不再停在红。
         s.apply("PreCompact", "a", Some("/x/foo"));
         assert_eq!(s.aggregate().status, "working");
     }
@@ -358,7 +390,7 @@ mod tests {
     #[test]
     fn expire_removes_only_matching_prefix_after_age() {
         let mut s = Store::default();
-        s.apply("Stop", "codex:e:/x/foo", Some("e:/x/foo")); // Codex 会话(黄)
+        s.apply("Stop", "codex:e:/x/foo", Some("e:/x/foo")); // Codex 会话(一轮结束=红)
         s.apply("UserPromptSubmit", "claude-a", Some("/x/bar")); // Claude 会话
         // max_age=0 -> 立即过期：只清 codex: 前缀的，Claude 的保留。
         assert!(s.expire("codex:", std::time::Duration::from_secs(0)));

@@ -27,6 +27,8 @@ pub struct Config {
     pub sound_file: Option<String>,
     /// 自定义提示音：红灯(等你确认)用，可设更显眼的。规则同 sound_file。None 用系统警告音。
     pub sound_urgent_file: Option<String>,
+    /// 极简模式：不显示桌面红绿灯，只用托盘图标反映状态(按状态切换/闪烁托盘图标)。
+    pub minimal: bool,
 }
 
 impl Default for Config {
@@ -40,6 +42,7 @@ impl Default for Config {
             vertical_size: None,
             sound_file: None,
             sound_urgent_file: None,
+            minimal: false,
         }
     }
 }

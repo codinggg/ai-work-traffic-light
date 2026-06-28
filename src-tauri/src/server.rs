@@ -9,7 +9,6 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_notification::NotificationExt;
 
 use crate::state::Aggregate;
 use crate::Shared;
@@ -34,7 +33,7 @@ pub fn start(app: AppHandle, shared: Arc<Shared>, port: u16) {
             let mut antigravity = crate::antigravity::AntigravityWatcher::new();
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(1500));
-                let changed = {
+                let (changed, activity) = {
                     let mut store = shared.store.lock().unwrap();
                     let err = store.scan_api_errors();
                     let cdx = codex.poll(&mut store);
@@ -46,8 +45,13 @@ pub fn start(app: AppHandle, shared: Arc<Shared>, port: u16) {
                         "antigravity:",
                         std::time::Duration::from_secs(ANTIGRAVITY_IDLE_TIMEOUT_SECS),
                     );
-                    err || cdx || anti || expired
+                    (err || cdx || anti || expired, err || cdx || anti)
                 };
+                // 新活动(Codex/Antigravity 新一轮、或 API 错误) -> 取消"已看过"的中性态(auto_off)，
+                // 让这条新状态(如 Codex 一轮结束的红灯)显示出来。expire(仅自动消隐)不算新活动。
+                if activity {
+                    shared.auto_off.store(false, Ordering::Relaxed);
+                }
                 if changed {
                     let agg = shared.store.lock().unwrap().aggregate();
                     apply_effective(&app, &shared, agg);
@@ -74,6 +78,8 @@ pub fn start(app: AppHandle, shared: Arc<Shared>, port: u16) {
 
             let Some(event) = event else { continue };
             let (session_id, cwd, transcript) = parse_payload(&body);
+            // 新的 hook 事件 = 新活动：清掉"红灯已自动灭"标记，让灯重新显示。
+            shared.auto_off.store(false, Ordering::Relaxed);
 
             let agg = {
                 let mut store = shared.store.lock().unwrap();
@@ -87,25 +93,22 @@ pub fn start(app: AppHandle, shared: Arc<Shared>, port: u16) {
             // 诊断：把收到的事件与结果状态追加到 events.log（排查灯色问题；问题定位后可移除）。
             log_event(&event, &session_id, &agg.status);
 
-            // 检测状态变化：进入红灯弹通知；任意状态切换(若开启)播放声音。
-            let (changed, entered_blocked) = {
+            // 检测状态变化：任意状态切换(若开启)播放一次提示音。红灯(一轮结束)用"红灯提示音"
+            // (更醒目)，其它用普通音；都不弹系统通知，只靠灯闪烁+声音提醒。
+            let changed = {
                 let mut last = shared.last_status.lock().unwrap();
-                let changed = *last != agg.status;
-                let entered = agg.status == "blocked" && *last != "blocked";
+                let c = *last != agg.status;
                 *last = agg.status.clone();
-                (changed, entered)
+                c
             };
-            if entered_blocked {
-                notify_blocked(&app, &agg.session_label);
-            }
             if changed && shared.sound_enabled.load(Ordering::Relaxed) {
-                // 红灯用 urgent 音，其它用普通音；各自可在 config.json/托盘里指定自定义 .wav。
-                let custom = if entered_blocked {
+                let is_red = agg.status == "blocked";
+                let custom = if is_red {
                     shared.sound_urgent_file.lock().unwrap().clone()
                 } else {
                     shared.sound_file.lock().unwrap().clone()
                 };
-                play_sound(entered_blocked, custom.as_deref());
+                play_sound(is_red, custom.as_deref());
             }
 
             apply_effective(&app, &shared, agg);
@@ -122,7 +125,15 @@ pub fn refresh(app: &AppHandle, shared: &Shared) {
 /// 把"真实聚合 + 手动显示"折算成最终显示，并显隐窗口。
 /// 无会话(none)时：手动显示 -> 灰色中性灯；否则隐藏。
 fn apply_effective(app: &AppHandle, shared: &Shared, real: Aggregate) {
-    let effective = if real.status != "none" {
+    let effective = if shared.auto_off.load(Ordering::Relaxed) {
+        // 红灯已被你切到窗口看过并自动灭：只显示外壳、三个灯都不亮(neutral)，且不闪；
+        // 一直保持到下一个 hook 事件清零 auto_off。这样切走也不会再闪(只闪到你看过为止)。
+        Aggregate {
+            status: "neutral".to_string(),
+            session_label: String::new(),
+            source: String::new(),
+        }
+    } else if real.status != "none" {
         real
     } else if shared.manual_show.load(Ordering::Relaxed) {
         Aggregate {
@@ -137,10 +148,14 @@ fn apply_effective(app: &AppHandle, shared: &Shared, real: Aggregate) {
     let _ = app.emit("state-changed", &effective);
     // 同步推一次"是否已查看(常亮)"：只有切到当前催你来源对应的窗口才算已查看。
     // 这里立刻算一次消除状态变化时的闪烁延迟；窗口切换则由 main.rs 定时器负责。
-    let ack = crate::platform::foreground_matches_source(&effective.source);
+    let ack = crate::platform::foreground_matches_window(&effective.source, &effective.session_label);
     let _ = app.emit("focus-changed", ack);
+    // 记录当前显示状态/已查看，供极简模式的托盘动画线程取用。
+    *shared.cur_status.lock().unwrap() = effective.status.clone();
+    shared.cur_ack.store(ack, Ordering::Relaxed);
     if let Some(win) = app.get_webview_window("light") {
-        if effective.status == "none" {
+        // 极简模式：不显示桌面灯，状态全靠托盘图标 -> 这里一律隐藏窗口。
+        if effective.status == "none" || shared.minimal.load(Ordering::Relaxed) {
             let _ = win.hide();
         } else {
             let vertical = shared
@@ -154,21 +169,6 @@ fn apply_effective(app: &AppHandle, shared: &Shared, real: Aggregate) {
             let _ = win.show();
         }
     }
-}
-
-/// 红灯：弹系统通知(含会话标识)。
-fn notify_blocked(app: &AppHandle, label: &str) {
-    let body = if label.is_empty() {
-        "有 Claude 会话在等待你的确认".to_string()
-    } else {
-        format!("「{label}」在等待你的确认")
-    };
-    let _ = app
-        .notification()
-        .builder()
-        .title("Claude 需要你")
-        .body(body)
-        .show();
 }
 
 /// 状态切换时播放提示音。

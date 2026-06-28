@@ -10,6 +10,7 @@ mod installer;
 mod platform;
 mod server;
 mod state;
+mod trayicon;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -23,6 +24,9 @@ use tauri::{
 
 /// Claude Code 的 hook 把事件 POST 到这个本地端口（U3 监听 / U5 安装器写入）。
 pub const STATE_PORT: u16 = 48756;
+
+/// 红灯(一轮结束)在你切到对应窗口、常亮这么多秒后自动熄灭(隐藏)，直到下一轮。
+const RED_AUTO_OFF_SECS: u64 = 2;
 
 /// 跨线程共享状态：会话状态机 + 上次聚合状态(红灯进入检测) + 声音开关
 /// + 位置锁定 + 是否已自动定位过(避免每次显示都把用户拖动的位置拽回去)
@@ -42,6 +46,15 @@ pub struct Shared {
     /// 自定义提示音(.wav)路径：普通切换用 / 红灯用。可在启动时从配置读入，也可托盘里改。
     pub sound_file: Mutex<Option<String>>,
     pub sound_urgent_file: Mutex<Option<String>>,
+    /// 红灯(一轮结束)被你切到窗口看过、常亮 RED_AUTO_OFF_SECS 秒后置位 -> 灯隐藏；
+    /// 收到下一个 hook 事件即清零，重新显示。
+    pub auto_off: AtomicBool,
+    /// 极简模式：不显示桌面灯，只用托盘图标反映状态(按状态切换/闪烁托盘图标)。
+    pub minimal: AtomicBool,
+    /// 当前显示状态(working/idle/blocked/error/neutral/none) + 是否已查看(常亮)；
+    /// 由 apply_effective 写入，供极简模式的托盘动画线程读取。
+    pub cur_status: Mutex<String>,
+    pub cur_ack: AtomicBool,
 }
 
 /// 把当前可持久化设置(提示音/锁定/位置/自定义音)写回 exe 同目录的 config.json。
@@ -55,6 +68,7 @@ fn persist(shared: &Shared) {
         vertical_size: *shared.vertical_size.lock().unwrap(),
         sound_file: shared.sound_file.lock().unwrap().clone(),
         sound_urgent_file: shared.sound_urgent_file.lock().unwrap().clone(),
+        minimal: shared.minimal.load(Ordering::Relaxed),
     });
 }
 
@@ -77,7 +91,7 @@ fn about_body() -> String {
          版本 {ver}\n\
          \n\
          用红绿灯显示 Claude Code，codex，antigravity 的工作状态，需要你时及时提醒：\n\
-         🟢 工作中　🟡 该你了　🔴 等你确认\n\
+         🟢 工作中　🟡 等你确认/选择　🔴 一轮结束(该你了)\n\
          \n\
          作者：alex\n\
          技术：Tauri (Rust) + Claude Code hooks",
@@ -347,6 +361,10 @@ fn main() {
                 vertical_size: Mutex::new(cfg.vertical_size),
                 sound_file: Mutex::new(cfg.sound_file.clone()),
                 sound_urgent_file: Mutex::new(cfg.sound_urgent_file.clone()),
+                auto_off: AtomicBool::new(false),
+                minimal: AtomicBool::new(cfg.minimal),
+                cur_status: Mutex::new("none".to_string()),
+                cur_ack: AtomicBool::new(false),
             });
 
             // 托盘菜单：提示音(子菜单) / 开机自启(勾选) + 安装/卸载 hooks + 退出。
@@ -397,6 +415,14 @@ fn main() {
                 shared.vertical_layout.load(Ordering::Relaxed),
                 None::<&str>,
             )?;
+            let minimal_item = CheckMenuItem::with_id(
+                app,
+                "toggle_minimal",
+                "极简模式(仅托盘图标)",
+                true,
+                shared.minimal.load(Ordering::Relaxed),
+                None::<&str>,
+            )?;
             let install =
                 MenuItem::with_id(app, "install_hooks", "安装 hooks", true, None::<&str>)?;
             let uninstall =
@@ -414,6 +440,7 @@ fn main() {
                     &autostart_item,
                     &lock_item,
                     &vertical_item,
+                    &minimal_item,
                     &sep1,
                     &install,
                     &uninstall,
@@ -431,9 +458,10 @@ fn main() {
             let autostart_check = autostart_item.clone();
             let lock_check = lock_item.clone();
             let vertical_check = vertical_item.clone();
+            let minimal_check = minimal_item.clone();
             let shared_tray = shared.clone();
 
-            let _tray = TrayIconBuilder::new()
+            let _tray = TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
                 .show_menu_on_left_click(false)
@@ -448,6 +476,8 @@ fn main() {
                     {
                         let next = !shared_tray.manual_show.load(Ordering::Relaxed);
                         shared_tray.manual_show.store(next, Ordering::Relaxed);
+                        // 用户主动召唤 -> 清掉自动灭标记，确保能显示。
+                        shared_tray.auto_off.store(false, Ordering::Relaxed);
                         server::refresh(tray.app_handle(), &shared_tray);
                     }
                 })
@@ -480,6 +510,20 @@ fn main() {
                         let next = !shared_menu.vertical_layout.load(Ordering::Relaxed);
                         apply_light_layout(app, &shared_menu, next, true);
                         let _ = vertical_check.set_checked(next);
+                        persist(&shared_menu);
+                    } else if id == "toggle_minimal" {
+                        let next = !shared_menu.minimal.load(Ordering::Relaxed);
+                        shared_menu.minimal.store(next, Ordering::Relaxed);
+                        let _ = minimal_check.set_checked(next);
+                        // 开极简：立即隐藏桌面灯；关极简：刷新一次重新显示。
+                        // 托盘图标由动画线程按 minimal/cur_status 自动切换。
+                        if next {
+                            if let Some(win) = app.get_webview_window("light") {
+                                let _ = win.hide();
+                            }
+                        } else {
+                            server::refresh(app, &shared_menu);
+                        }
                         persist(&shared_menu);
                     } else if id == "pick_sound" || id == "pick_sound_urgent" {
                         // 弹文件框选 .wav；选完写入配置并试听一次。
@@ -580,6 +624,13 @@ fn main() {
 
             // 置顶/焦点检测线程要用的克隆（下面 server::start 会拿走 shared 本体）。
             let shared_timer = shared.clone();
+            // 极简模式托盘动画线程要用的克隆。
+            let shared_tray_anim = shared.clone();
+            // 极简模式 neutral 用应用自带的红绿灯图标(转成 owned，可跨线程长期持有)。
+            let default_tray_icon = {
+                let di = app.default_window_icon().unwrap();
+                tauri::image::Image::new_owned(di.rgba().to_vec(), di.width(), di.height())
+            };
 
             // 本地状态端点(U3) + 状态机(U4) + 红灯通知(U7)。
             server::start(app.handle().clone(), shared, STATE_PORT);
@@ -594,6 +645,7 @@ fn main() {
                 let mut saved_horizontal_size = *shared_timer.horizontal_size.lock().unwrap();
                 let mut saved_vertical_size = *shared_timer.vertical_size.lock().unwrap();
                 let mut last_ack: Option<bool> = None; // None = 还没通知过前端
+                let mut red_focus_since: Option<std::time::Instant> = None; // 红灯被聚焦的起点
                 std::thread::spawn(move || loop {
                     std::thread::sleep(std::time::Duration::from_millis(800));
 
@@ -606,19 +658,44 @@ fn main() {
 
                     // "精确到窗口"的停闪：取当前在催你的来源(claude/codex)，
                     // 只有前台是该来源对应的窗口才算已查看(常亮 is-ack)，否则继续闪。
-                    let source = shared_timer.store.lock().unwrap().aggregate().source;
-                    let ack = platform::foreground_matches_source(&source);
+                    let agg = shared_timer.store.lock().unwrap().aggregate();
+                    let ack = platform::foreground_matches_window(&agg.source, &agg.session_label);
+                    // 供极简模式托盘动画用的实时焦点(apply_effective 只在状态变化时写，会过时 ->
+                    // 托盘红灯切走后不闪。这里每拍刷新，让托盘按实时焦点闪/常亮)。
+                    shared_timer.cur_ack.store(ack, Ordering::Relaxed);
                     if last_ack != Some(ack) {
                         last_ack = Some(ack);
-                        // 开发模式打印：看清前台进程名 + 来源 + 是否已查看（排查灯闪/常亮）。
+                        // 开发模式打印：前台进程名 + 标题 + 来源 + 项目 + 是否已查看（排查多窗口停闪）。
                         #[cfg(debug_assertions)]
                         eprintln!(
-                            "[traffic-light] 焦点变化: 前台={:?} 来源={:?} 已查看={}",
+                            "[traffic-light] 焦点变化: 前台={:?} 标题={:?} 来源={:?} 项目={:?} 已查看={}",
                             platform::foreground_token(),
-                            source,
+                            platform::foreground_title(),
+                            agg.source,
+                            agg.session_label,
                             ack
                         );
                         let _ = app_handle.emit("focus-changed", ack);
+                    }
+
+                    // 红灯(一轮结束)自动灭：你切到对应窗口(ack)、红灯常亮 RED_AUTO_OFF_SECS 秒后
+                    // 隐藏灯；没切过去就一直闪不熄。收到下一个 hook 事件会清零 auto_off 重新显示。
+                    if agg.status == "blocked" && ack {
+                        match red_focus_since {
+                            None => red_focus_since = Some(std::time::Instant::now()),
+                            Some(t) => {
+                                if t.elapsed() >= std::time::Duration::from_secs(RED_AUTO_OFF_SECS)
+                                    && !shared_timer.auto_off.load(Ordering::Relaxed)
+                                {
+                                    shared_timer.auto_off.store(true, Ordering::Relaxed);
+                                    // 灯灭=只剩外壳不亮灯(neutral)：刷新一次让 apply_effective 切到 neutral。
+                                    server::refresh(&app_handle, &shared_timer);
+                                    red_focus_since = None;
+                                }
+                            }
+                        }
+                    } else {
+                        red_focus_since = None;
                     }
 
                     let cur_pos = *shared_timer.last_pos.lock().unwrap();
@@ -633,6 +710,51 @@ fn main() {
                         saved_vertical_size = cur_vertical_size;
                         persist(&shared_timer);
                     }
+                });
+            }
+
+            // 极简模式：托盘图标动画线程。每 ~450ms 按当前状态刷新托盘图标：
+            //   working->绿(常亮) / idle|error->黄 / blocked->红；红黄未查看时闪(亮↔暗交替)；
+            //   neutral/none -> 应用自带的红绿灯图标。非极简模式则保持默认应用图标。
+            {
+                let app_handle = app.handle().clone();
+                let shared = shared_tray_anim;
+                let default_icon = default_tray_icon;
+                let mut phase = false;
+                let mut last_key = String::new();
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_millis(450));
+                    let Some(tray) = app_handle.tray_by_id("main") else {
+                        continue;
+                    };
+                    if !shared.minimal.load(Ordering::Relaxed) {
+                        // 非极简：保持默认应用图标(只设一次)。
+                        if last_key != "default" {
+                            let _ = tray.set_icon(Some(default_icon.clone()));
+                            last_key = "default".to_string();
+                        }
+                        continue;
+                    }
+                    phase = !phase;
+                    let status = shared.cur_status.lock().unwrap().clone();
+                    // 极简模式下托盘红/黄一律闪(亮↔黑交替)以醒目提醒；绿常亮；neutral=应用图标。
+                    // 不做焦点门控(否则你在工作窗口时看不到闪)；停闪靠 auto_off：切到对应窗口
+                    // 看过 5 秒 -> 状态变 neutral -> 自动停。
+                    let (active, blink) = match status.as_str() {
+                        "working" => (Some(trayicon::Lamp::Green), false),
+                        "idle" | "error" => (Some(trayicon::Lamp::Yellow), true),
+                        "blocked" => (Some(trayicon::Lamp::Red), true),
+                        _ => (None, false), // neutral/none -> 全灭红绿灯
+                    };
+                    // 闪烁态把 phase 编进 key -> 每拍都变 -> 交替亮灭；常亮/neutral 只设一次。
+                    let lit = if blink { phase } else { true };
+                    let key = format!("{status}-{lit}");
+                    if key == last_key {
+                        continue;
+                    }
+                    last_key = key;
+                    // 极简模式：托盘显示「灯框+3灯」的完整红绿灯（mac 菜单栏 / Linux 指示器 / Windows 托盘）。
+                    let _ = tray.set_icon(Some(trayicon::traffic_light_image(active, lit)));
                 });
             }
 
