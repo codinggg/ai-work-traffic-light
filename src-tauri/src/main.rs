@@ -740,25 +740,21 @@ fn main() {
                     // 极简模式下托盘红/黄一律闪(亮↔黑交替)以醒目提醒；绿常亮；neutral=应用图标。
                     // 不做焦点门控(否则你在工作窗口时看不到闪)；停闪靠 auto_off：切到对应窗口
                     // 看过 5 秒 -> 状态变 neutral -> 自动停。
-                    let (color, blink) = match status.as_str() {
-                        "working" => (Some(trayicon::GREEN), false),
-                        "idle" | "error" => (Some(trayicon::YELLOW), true),
-                        "blocked" => (Some(trayicon::RED), true),
-                        _ => (None, false), // neutral/none -> 默认红绿灯图标
+                    let (active, blink) = match status.as_str() {
+                        "working" => (Some(trayicon::Lamp::Green), false),
+                        "idle" | "error" => (Some(trayicon::Lamp::Yellow), true),
+                        "blocked" => (Some(trayicon::Lamp::Red), true),
+                        _ => (None, false), // neutral/none -> 全灭红绿灯
                     };
-                    // 闪烁态把 phase 编进 key -> 每拍都变 -> 交替亮暗；常亮/neutral 只设一次。
-                    // 用 status(而非颜色)做 key：黄/红的 R 通道相同会撞车。
+                    // 闪烁态把 phase 编进 key -> 每拍都变 -> 交替亮灭；常亮/neutral 只设一次。
                     let lit = if blink { phase } else { true };
                     let key = format!("{status}-{lit}");
                     if key == last_key {
                         continue;
                     }
                     last_key = key;
-                    let icon = match color {
-                        Some(c) => trayicon::lamp_image(c, lit),
-                        None => default_icon.clone(),
-                    };
-                    let _ = tray.set_icon(Some(icon));
+                    // 极简模式：托盘显示「灯框+3灯」的完整红绿灯（mac 菜单栏 / Linux 指示器 / Windows 托盘）。
+                    let _ = tray.set_icon(Some(trayicon::traffic_light_image(active, lit)));
                 });
             }
 

@@ -116,3 +116,5 @@ codex中发起对话有输出，但是没亮灯
 [traffic-light][codex] task_started codex:rollout-2026-06-27T08-35-31-019f0680-b1c6-7a12-99d1-c2d93fea0fe8 cwd=None -> working(绿)
 [traffic-light][codex] task_complete codex:rollout-2026-06-27T08-35-31-019f0680-b1c6-7a12-99d1-c2d93fea0fe8 cwd=None -> blocked(红)
 在 Claude 应用发没有输出，没亮灯
+
+在切换成极简模式的时候，在linux，macos上则是红绿灯放在dock上显示，（显示灯框和3个灯），功能和原来在桌面上显示的一样
