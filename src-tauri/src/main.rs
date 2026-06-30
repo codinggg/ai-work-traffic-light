@@ -201,6 +201,15 @@ pub(crate) fn resize_light_window(
 
 fn apply_lock_state(win: &tauri::WebviewWindow<tauri::Wry>, locked: bool) {
     let _ = win.set_ignore_cursor_events(locked);
+    // Linux(GTK)：gtk_window_resize() 对【非 resizable】窗口无效 —— 我们靠自定义拖拽缩放
+    // 调 set_size 改尺寸会被 GTK 忽略(表现为高度卡死/最小时变正方形、放大时 y 轴不缩放)。
+    // 本窗口 decorations:false(无标题栏/边框)，设 resizable(true) 不会给用户 OS 缩放把手，
+    // 只是让程序化 set_size 生效；锁定时窗口点击穿透(set_ignore_cursor_events)且前端不发缩放
+    // 请求，故不会被误缩放。Windows/macOS 在 resizable(false) 下 set_size 也生效，保持 false
+    // 以免无装饰窗口出现 OS 边缘缩放/贴边等干扰。
+    #[cfg(target_os = "linux")]
+    let _ = win.set_resizable(true);
+    #[cfg(not(target_os = "linux"))]
     let _ = win.set_resizable(false);
 }
 
