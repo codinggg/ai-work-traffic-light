@@ -36,6 +36,8 @@ name = "ai-work-traffic-light"
 version = "0.1.0"
 dependencies = [
  "active-win-pos-rs",
+ "objc2",
+ "png 0.17.16",
  "serde",
  "serde_json",
  "tauri",

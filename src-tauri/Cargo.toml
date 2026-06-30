@@ -35,6 +35,14 @@ webview2-com = "0.38"
 [target.'cfg(not(windows))'.dependencies]
 active-win-pos-rs = "0.8"
 
+# macOS：提醒时在 dock 显示/闪红黄灯。objc2 用 msg_send! 调 AppKit
+# [[NSApplication sharedApplication] setApplicationIconImage:] —— 运行时取类，不依赖
+# objc2-app-kit 的类型绑定/feature；png 把红绿灯 RGBA 编成 PNG 给 NSImage initWithData:。
+# 两者都已在依赖树里(tauri/tao 的传递依赖)，此处仅显式引用，不引入新下载。
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+png = "0.17"
+
 [profile.release]
 opt-level = "s"
 lto = true

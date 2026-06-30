@@ -6,6 +6,9 @@
 mod antigravity;
 mod codex;
 mod config;
+// macOS dock 图标(提醒时闪红/黄灯)；其它平台没有 dock 概念，不编译。
+#[cfg(target_os = "macos")]
+mod dockicon;
 mod installer;
 mod platform;
 mod server;
@@ -716,45 +719,77 @@ fn main() {
             // 极简模式：托盘图标动画线程。每 ~450ms 按当前状态刷新托盘图标：
             //   working->绿(常亮) / idle|error->黄 / blocked->红；红黄未查看时闪(亮↔暗交替)；
             //   neutral/none -> 应用自带的红绿灯图标。非极简模式则保持默认应用图标。
+            // macOS 额外：把同一状态投到 dock 图标(见下方 #[cfg(target_os = "macos")] 块)——
+            //   极简模式 dock 镜像托盘(全状态)；普通模式 dock 只在提醒(红/黄)时闪、其它恢复默认图标。
             {
                 let app_handle = app.handle().clone();
                 let shared = shared_tray_anim;
                 let default_icon = default_tray_icon;
                 let mut phase = false;
-                let mut last_key = String::new();
+                let mut last_tray_key = String::new();
+                // dock 图标上次设置的 key(去重，避免每拍重复设置)；仅 macOS 用。
+                #[cfg(target_os = "macos")]
+                let mut last_dock_key = String::new();
                 std::thread::spawn(move || loop {
                     std::thread::sleep(std::time::Duration::from_millis(450));
-                    let Some(tray) = app_handle.tray_by_id("main") else {
-                        continue;
-                    };
-                    if !shared.minimal.load(Ordering::Relaxed) {
-                        // 非极简：保持默认应用图标(只设一次)。
-                        if last_key != "default" {
-                            let _ = tray.set_icon(Some(default_icon.clone()));
-                            last_key = "default".to_string();
-                        }
-                        continue;
-                    }
                     phase = !phase;
+                    let minimal = shared.minimal.load(Ordering::Relaxed);
                     let status = shared.cur_status.lock().unwrap().clone();
-                    // 极简模式下托盘红/黄一律闪(亮↔黑交替)以醒目提醒；绿常亮；neutral=应用图标。
+                    // 状态 -> 点亮哪个灯 + 是否闪。红/黄闪(亮↔暗交替)；绿常亮；其它全灭(只灯框)。
                     // 不做焦点门控(否则你在工作窗口时看不到闪)；停闪靠 auto_off：切到对应窗口
-                    // 看过 5 秒 -> 状态变 neutral -> 自动停。
+                    // 看过几秒 -> 状态变 neutral -> 自动停。
                     let (active, blink) = match status.as_str() {
                         "working" => (Some(trayicon::Lamp::Green), false),
                         "idle" | "error" => (Some(trayicon::Lamp::Yellow), true),
                         "blocked" => (Some(trayicon::Lamp::Red), true),
                         _ => (None, false), // neutral/none -> 全灭红绿灯
                     };
-                    // 闪烁态把 phase 编进 key -> 每拍都变 -> 交替亮灭；常亮/neutral 只设一次。
+                    // 闪烁态把 phase 编进 lit -> 每拍交替亮灭；常亮/neutral 恒亮。
                     let lit = if blink { phase } else { true };
-                    let key = format!("{status}-{lit}");
-                    if key == last_key {
-                        continue;
+
+                    // ---- 托盘图标：仅极简模式按状态切换/闪烁；非极简保持默认应用图标 ----
+                    if let Some(tray) = app_handle.tray_by_id("main") {
+                        if !minimal {
+                            if last_tray_key != "default" {
+                                let _ = tray.set_icon(Some(default_icon.clone()));
+                                last_tray_key = "default".to_string();
+                            }
+                        } else {
+                            // 极简模式：托盘显示「灯框+3灯」的完整红绿灯
+                            // (mac 菜单栏 / Linux 指示器 / Windows 托盘)。
+                            let key = format!("{status}-{lit}");
+                            if key != last_tray_key {
+                                last_tray_key = key;
+                                let _ = tray.set_icon(Some(trayicon::traffic_light_image(active, lit)));
+                            }
+                        }
                     }
-                    last_key = key;
-                    // 极简模式：托盘显示「灯框+3灯」的完整红绿灯（mac 菜单栏 / Linux 指示器 / Windows 托盘）。
-                    let _ = tray.set_icon(Some(trayicon::traffic_light_image(active, lit)));
+
+                    // ---- macOS dock 图标 ----
+                    // 极简模式：dock 镜像托盘(全状态都画灯框+灯，neutral=只灯框)，和桌面灯功能一致；
+                    // 普通模式：dock 只在提醒(idle/error/blocked = 黄/红)时显示并闪，其它恢复默认 dock 图标。
+                    // setApplicationIconImage: 是 AppKit UI 调用 -> 必须主线程，故 run_on_main_thread。
+                    #[cfg(target_os = "macos")]
+                    {
+                        let dock_show =
+                            minimal || matches!(status.as_str(), "idle" | "error" | "blocked");
+                        let dock_key = if dock_show {
+                            format!("{status}-{lit}")
+                        } else {
+                            "default".to_string()
+                        };
+                        if dock_key != last_dock_key {
+                            last_dock_key = dock_key;
+                            // PNG 编码在本线程做(轻量)；objc 设置图标投到主线程。
+                            let payload = if dock_show {
+                                dockicon::encode_png(&trayicon::traffic_light_image(active, lit))
+                            } else {
+                                None // 恢复默认 dock 图标
+                            };
+                            let _ = app_handle
+                                .run_on_main_thread(move || dockicon::set_dock_image(payload));
+                        }
+                    }
                 });
             }
 
