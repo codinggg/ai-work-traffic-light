@@ -29,9 +29,10 @@ body {
   user-select: none;
 }
 
-/* 容器填满整个(透明)窗口，整窗可拖；外壳+标签靠左 */
+/* 容器填满整个(透明)窗口，整窗可拖；外壳居中(异常宽高时只留透明边，不拉伸灯) */
 .widget {
-  --lamp-size: calc(25px * var(--traffic-scale));
+  /* 灯尺寸用固定基准值；整体由 .housing 的 transform:scale 等比缩放(见下)。 */
+  --lamp-size: 25px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -50,33 +51,44 @@ body {
   pointer-events: none;
 }
 
-/* 黑色外壳：横向容纳三个灯 */
+/* 黑色外壳：横向容纳三个灯。
+   关键：外壳用【固定基准尺寸】(横向 99×33，竖向 62×166)绘制 —— 边框/圆角/间距/内边距/
+   灯/阴影全用基准 px，再用 transform:scale(--traffic-scale) 整体等比缩放。这样：
+     · 缩到最小不会因为"边框是固定 1px、其它按比例缩"而把灯挤出去被裁剪；
+     · 放大时边框/阴影/灯一起等比放大，比例恒定(不会出现阴影不等比的"不对等")。
+   后端把窗口也设成 base×scale，故缩放后正好填满窗口；若窗口被异常设成别的宽高
+   (如某些 Linux 下高度被忽略)，外壳也只是居中、四周留透明边，灯绝不被裁剪或拉伸变形。 */
 .housing {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: calc(5px * var(--traffic-scale));
-  width: 100%;
-  height: 100%;
-  padding: calc(3px * var(--traffic-scale)) calc(6px * var(--traffic-scale));
+  gap: 5px;
+  width: 99px;
+  height: 33px;
+  padding: 3px 6px;
   background: #15171c;
   border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: calc(9px * var(--traffic-scale));
+  border-radius: 9px;
   box-shadow: none;
   overflow: hidden;
+  transform: scale(var(--traffic-scale));
+  transform-origin: center center;
 }
 
 .widget.is-vertical {
-  --lamp-size: calc(48px * var(--traffic-scale));
+  --lamp-size: 48px;
   justify-content: center;
   padding: 0;
 }
 
 .widget.is-vertical .housing {
   flex-direction: column;
-  gap: calc(7px * var(--traffic-scale));
+  gap: 7px;
   justify-content: center;
-  padding: calc(3px * var(--traffic-scale)) calc(6px * var(--traffic-scale));
+  padding: 3px 6px;
+  /* 竖向基准尺寸 62×166(同样由 .housing 的 transform:scale 等比缩放)。 */
+  width: 62px;
+  height: 166px;
 }
 
 /* 灯：默认用浅色(--off)，亮起时用深色(--on)+光晕 */
